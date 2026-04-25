@@ -1,0 +1,14 @@
+node_modules
+dist
+dist-ssr
+.git
+.gitignore
+.claude
+*.log
+.DS_Store
+.vscode
+.idea
+ts_errors.txt
+ts_check.txt
+GAME_LOGIC.md
+README.md
