@@ -409,6 +409,7 @@ body {
   border-radius: 12px;
   overflow: hidden;
   background: #101924;
+  min-height: 380px;
 }
 
 #board3d {
