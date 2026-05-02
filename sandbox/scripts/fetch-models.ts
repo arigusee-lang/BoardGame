@@ -46,10 +46,16 @@ interface Query {
   minFaces?: number;
   animated?: boolean;    // require animations
   preferUid?: string;    // override picker with a specific uid
+  excludeUids?: string[]; // uids to skip (already tried, didn't fit)
 }
 
+// Past picks that didn't visually fit (kept here so re-fetches don't pick them again).
+const EXCLUDE_TREE: string[] = []; // tree pick is OK
+const EXCLUDE_SWORD: string[] = []; // populate via `list weapon_sword` then re-fetch
+const EXCLUDE_ANIM: string[] = [];
+
 const QUERIES: Query[] = [
-  { slug: 'tree',     query: 'low poly tree',           maxFaces: 8000 },
+  { slug: 'tree',     query: 'low poly tree',           maxFaces: 8000, excludeUids: EXCLUDE_TREE },
   { slug: 'rock',     query: 'low poly rock',           maxFaces: 5000 },
   { slug: 'mushroom', query: 'low poly mushroom',       maxFaces: 6000 },
   { slug: 'crate',    query: 'low poly wooden crate',   maxFaces: 4000 },
@@ -59,9 +65,16 @@ const QUERIES: Query[] = [
   // weapons
   { slug: 'weapon_pistol', query: 'low poly pistol',         maxFaces: 8000 },
   { slug: 'weapon_rifle',  query: 'low poly AK47',           maxFaces: 12000 },
-  { slug: 'weapon_sword',  query: 'low poly sword',          maxFaces: 8000 },
-  { slug: 'weapon_anim',   query: 'animated weapon',         maxFaces: 25000, animated: true },
+  // Celtic Sword by Urizel — clean stand-alone sword, 4344 faces
+  { slug: 'weapon_sword',  query: 'low poly stylized sword', maxFaces: 5000, excludeUids: EXCLUDE_SWORD,
+                           preferUid: 'ef79d989a32e476884b9c0ed1dc68134' },
+  { slug: 'weapon_anim',   query: 'animated weapon',         maxFaces: 25000, animated: true, excludeUids: EXCLUDE_ANIM },
 ];
+
+// CLI: --refetch=slug1,slug2 forces re-download (skipping the already-present check)
+const refetchArg = process.argv.find(a => a.startsWith('--refetch='));
+const REFETCH = new Set(refetchArg ? refetchArg.slice('--refetch='.length).split(',') : []);
+if (REFETCH.size) console.log(`[refetch] forcing re-download for: ${[...REFETCH].join(', ')}`);
 
 async function search(q: string, animated = false): Promise<SearchResult[]> {
   const url = new URL('https://api.sketchfab.com/v3/search');
@@ -78,16 +91,53 @@ async function search(q: string, animated = false): Promise<SearchResult[]> {
 }
 
 function pick(results: SearchResult[], q: Query): SearchResult | null {
+  const exclude = new Set(q.excludeUids ?? []);
+  // honour preferUid if it's in the result set
+  if (q.preferUid) {
+    const explicit = results.find(r => r.uid === q.preferUid);
+    if (explicit) return explicit;
+  }
   for (const r of results) {
+    if (exclude.has(r.uid)) continue;
     if (!r.isDownloadable) continue;
     if (r.price && r.price > 0) continue;
     if (!r.archives?.glb) continue;
     if (q.maxFaces && r.faceCount > q.maxFaces) continue;
     if (q.minFaces && r.faceCount < q.minFaces) continue;
-    if (r.archives.glb.size > 25 * 1024 * 1024) continue; // <25 MB
+    if (r.archives.glb.size > 25 * 1024 * 1024) continue;
     return r;
   }
   return null;
+}
+
+async function fetchModelByUid(uid: string): Promise<SearchResult | null> {
+  // direct lookup so preferUid works even if it falls outside the top search results.
+  const res = await fetch(`https://api.sketchfab.com/v3/models/${uid}`, { headers: HEADERS });
+  if (!res.ok) return null;
+  return await res.json() as SearchResult;
+}
+
+async function listCandidates(slug: string): Promise<void> {
+  const q = QUERIES.find(x => x.slug === slug);
+  if (!q) { console.error(`No query for slug "${slug}"`); process.exit(1); }
+  console.log(`[list] candidates for "${q.query}":`);
+  const results = await search(q.query, q.animated);
+  const exclude = new Set(q.excludeUids ?? []);
+  let n = 0;
+  for (const r of results) {
+    if (n >= 12) break;
+    const flags: string[] = [];
+    if (exclude.has(r.uid))                               flags.push('EXCL');
+    if (!r.isDownloadable)                                flags.push('!dl');
+    if (r.price && r.price > 0)                          flags.push('paid');
+    if (!r.archives?.glb)                                 flags.push('!glb');
+    if (q.maxFaces && r.faceCount > q.maxFaces)           flags.push('>faces');
+    if (q.minFaces && r.faceCount < q.minFaces)           flags.push('<faces');
+    if (r.archives?.glb && r.archives.glb.size > 25 * 1024 * 1024) flags.push('>25MB');
+    const mark = flags.length === 0 ? '✓' : '✗';
+    console.log(`  ${mark} ${r.uid}  ${(r.faceCount + '').padStart(6)} faces  ${flags.join(',').padEnd(12)}  ${r.user.displayName} — ${r.name}`);
+    n++;
+  }
 }
 
 async function getDownloadUrl(uid: string): Promise<string> {
@@ -131,13 +181,19 @@ async function saveCredits(entries: CreditsEntry[]): Promise<void> {
 }
 
 async function main() {
+  // CLI: `list <slug>` — print top candidates for that slug and exit.
+  if (process.argv[2] === 'list' && process.argv[3]) {
+    await listCandidates(process.argv[3]);
+    return;
+  }
+
   await mkdir(OUT_DIR, { recursive: true });
   const credits = await loadCredits();
   const seen = new Set(credits.map(c => c.slug));
 
   for (const q of QUERIES) {
     const dest = join(OUT_DIR, `${q.slug}.glb`);
-    if (existsSync(dest) && seen.has(q.slug)) {
+    if (existsSync(dest) && seen.has(q.slug) && !REFETCH.has(q.slug)) {
       const s = await stat(dest);
       console.log(`[skip] ${q.slug} already present (${(s.size / 1024).toFixed(0)} KB)`);
       continue;

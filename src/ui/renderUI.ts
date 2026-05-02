@@ -106,8 +106,9 @@ export function refreshPlayerMaxEnergy(playerId: PlayerId, clampEnergy: boolean 
 }
 
 export function renderUI(): void {
-  refreshPlayerMaxEnergy('A', true);
-  refreshPlayerMaxEnergy('B', true);
+  // renderUI is read-only on game state. `player.maxEnergy` is kept in sync
+  // by the events that actually change it (createBuilding,
+  // confirmFoundationUse, destroyBase, startTurn). No mutating recompute here.
   const currentPlayer = getCurrentPlayer();
   const opponentId = currentPlayer.id === 'A' ? 'B' : 'A';
   const playerA = state.players.A;

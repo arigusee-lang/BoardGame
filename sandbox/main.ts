@@ -33,7 +33,7 @@ const SPRINT_SPEED = 12;
 const JUMP_SPEED = 9;
 const MOUSE_SENS = 0.0022;
 const PITCH_LIMIT = Math.PI / 2 - 0.05;
-const GRASS_COUNT = 26000;
+const GRASS_COUNT = 13000;
 
 const MODEL_BASE = '/sandbox/models/';
 
@@ -47,7 +47,7 @@ const infoEl = document.getElementById('info')!;
 
 // --- renderer / scene ------------------------------------------------------
 
-const renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true });
+const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -61,7 +61,9 @@ scene.background = new THREE.Color(0x070b18);
 const pmrem = new THREE.PMREMGenerator(renderer);
 scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 
-const camera = new THREE.PerspectiveCamera(72, window.innerWidth / window.innerHeight, 0.1, 1500);
+// near 0.15 / far 600 keeps 24-bit depth precision well-distributed without
+// the cost of logarithmicDepthBuffer (which made rendering noticeably slower).
+const camera = new THREE.PerspectiveCamera(72, window.innerWidth / window.innerHeight, 0.15, 600);
 scene.add(camera);
 
 window.addEventListener('resize', () => {
@@ -121,7 +123,7 @@ function surfaceRadius(unitDir: THREE.Vector3): number {
 }
 
 {
-  const planetGeom = new THREE.IcosahedronGeometry(1, 7);
+  const planetGeom = new THREE.IcosahedronGeometry(1, 6);
   const pos = planetGeom.attributes.position;
   const v = new THREE.Vector3();
   const colors = new Float32Array(pos.count * 3);
@@ -159,33 +161,55 @@ function surfaceRadius(unitDir: THREE.Vector3): number {
 // --- grass instancing ------------------------------------------------------
 
 /**
- * Build a grass-tuft geometry: 3 crossed quads at 60° around the Y axis.
- * Each quad tapers slightly toward the top so it reads as blades, not boards.
- * The resulting tuft looks similar from every viewing direction.
+ * Build a grass-tuft geometry: a small fan of thin blade triangles arranged
+ * radially around the local origin. Each blade is a single triangle pointing
+ * up and slightly outward — looks like a clump of grass with proper volume,
+ * unlike crossed quads which read as paperish.
  */
 function makeGrassTuft(): THREE.BufferGeometry {
-  const W = 0.16;       // base half-width
-  const H = 0.55;       // height
-  const TopK = 0.3;     // how much narrower the top is
   const verts: number[] = [];
-  const uvs: number[] = [];
-  for (let i = 0; i < 3; i++) {
-    const yaw = (i * Math.PI) / 3;
-    const cs = Math.cos(yaw), sn = Math.sin(yaw);
-    const bx1 = -W * cs,        bz1 = -W * sn;
-    const bx2 =  W * cs,        bz2 =  W * sn;
-    const tx2 =  W * cs * TopK, tz2 =  W * sn * TopK;
-    const tx1 = -W * cs * TopK, tz1 = -W * sn * TopK;
-    // tri 1
-    verts.push(bx1, 0, bz1,  bx2, 0, bz2,  tx2, H, tz2);
-    uvs.push(0, 0,  1, 0,  1, 1);
-    // tri 2
-    verts.push(bx1, 0, bz1,  tx2, H, tz2,  tx1, H, tz1);
-    uvs.push(0, 0,  1, 1,  0, 1);
+  const NumBlades = 7;
+  const baseR = 0.04;        // how far from centre each blade's base sits
+  const tipOffset = 0.08;    // outward lean of the blade tip
+  const halfBase = 0.012;    // half-width of blade at base
+  const Hmin = 0.22, Hmax = 0.42;
+
+  // deterministic per-blade jitter so all instances share the same tuft shape
+  let seed = 9173;
+  const rand = () => {
+    seed = (seed * 16807) % 2147483647;
+    return seed / 2147483647;
+  };
+
+  for (let i = 0; i < NumBlades; i++) {
+    const a = (i / NumBlades) * Math.PI * 2 + rand() * 0.4;
+    const cs = Math.cos(a), sn = Math.sin(a);
+
+    // base centre
+    const bcx = cs * baseR;
+    const bcz = sn * baseR;
+
+    // base perpendicular (cross with up)
+    const px = -sn * halfBase;
+    const pz =  cs * halfBase;
+
+    // tip leans outward + small forward kink for character
+    const tipAngleJitter = a + (rand() - 0.5) * 0.4;
+    const tcs = Math.cos(tipAngleJitter), tsn = Math.sin(tipAngleJitter);
+    const tx = bcx + tcs * tipOffset;
+    const tz = bcz + tsn * tipOffset;
+    const ty = Hmin + rand() * (Hmax - Hmin);
+
+    // 1 triangle per blade — rendered DoubleSide
+    verts.push(
+      bcx - px, 0, bcz - pz,
+      bcx + px, 0, bcz + pz,
+      tx,       ty, tz,
+    );
   }
+
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   g.computeVertexNormals();
   return g;
 }
@@ -514,11 +538,19 @@ interface WeaponConfig {
   hasMuzzleFlash?: boolean;
 }
 
+// Per-weapon: targetSize is the longest-axis world size of the actual visible
+// geometry (bones/empties excluded). euler is applied to wrap to align the
+// model's natural forward axis with camera -Z. Tuned by inspection of
+// each .glb in this scene; revisit when swapping models.
 const WEAPONS: WeaponConfig[] = [
-  { slug: 'weapon_pistol', display: 'Pistol', type: 'ranged', range: 220, cooldown: 0.25, targetSize: 0.32, position: [0.20, -0.18, -0.32], euler: [0, Math.PI, 0],          procRecoilZ: 0.05, hasMuzzleFlash: true },
-  { slug: 'weapon_rifle',  display: 'AKM',    type: 'ranged', range: 260, cooldown: 0.10, targetSize: 0.85, position: [0.18, -0.20, -0.45], euler: [0, Math.PI, 0],          procRecoilZ: 0.07, hasMuzzleFlash: true },
-  { slug: 'weapon_sword',  display: 'Sword',  type: 'melee',  range: 4.0, cooldown: 0.45, targetSize: 1.10, position: [0.30, -0.30, -0.40], euler: [0, -0.5, 0.4],            procSwingDeg: 100 },
-  { slug: 'weapon_anim',   display: 'Colt',   type: 'ranged', range: 220, cooldown: 0.30, targetSize: 0.30, position: [0.20, -0.18, -0.32], euler: [0, Math.PI, 0],          attackKeywords: ['fire', 'shoot', 'recoil'], hasMuzzleFlash: true },
+  // DJMaesen pistol: model's natural forward = +Z, euler [0, π, 0] flips it to -Z
+  { slug: 'weapon_pistol', display: 'Pistol', type: 'ranged', range: 220, cooldown: 0.25, targetSize: 0.28, position: [0.20, -0.18, -0.32], euler: [0, Math.PI, 0],         procRecoilZ: 0.05, hasMuzzleFlash: true },
+  // TastyTony AKM: natural forward = +X, rotate around Y by π/2 so barrel ends up along -Z
+  { slug: 'weapon_rifle',  display: 'AKM',    type: 'ranged', range: 260, cooldown: 0.10, targetSize: 0.70, position: [0.16, -0.22, -0.42], euler: [0, Math.PI / 2, 0],     procRecoilZ: 0.07, hasMuzzleFlash: true },
+  // Ramhat cyberpunk blade: natural blade direction = +Y. Rotate so blade points -Z+slightly up; hilt down-near.
+  { slug: 'weapon_sword',  display: 'Sword',  type: 'melee',  range: 3.5, cooldown: 0.45, targetSize: 0.85, position: [0.28, -0.30, -0.20], euler: [-Math.PI / 2 + 0.3, 0.3, 0.4], procSwingDeg: 110 },
+  // Ole Gunnar Isager Colt M1911 (animated): natural forward = +X. Same as AKM.
+  { slug: 'weapon_anim',   display: 'Colt',   type: 'ranged', range: 220, cooldown: 0.30, targetSize: 0.22, position: [0.20, -0.18, -0.30], euler: [0, Math.PI / 2, 0],     attackKeywords: ['fire', 'shoot', 'recoil'], hasMuzzleFlash: true },
 ];
 
 interface ActiveWeapon {
@@ -534,6 +566,30 @@ interface ActiveWeapon {
 const weaponPool: ActiveWeapon[] = [];
 let activeIndex = 0;
 
+/**
+ * bbox using only Mesh geometry — bones/empties/lights inside skinned glbs
+ * (e.g. the animated Colt) can otherwise blow up the bbox and make the
+ * normalised scale absurdly small or large.
+ */
+function meshOnlyBbox(root: THREE.Object3D): THREE.Box3 {
+  const result = new THREE.Box3();
+  result.makeEmpty();
+  root.updateMatrixWorld(true);
+  const tmp = new THREE.Box3();
+  root.traverse(c => {
+    const m = c as THREE.Mesh;
+    if (m.isMesh && m.geometry) {
+      if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+      const gb = m.geometry.boundingBox;
+      if (gb) {
+        tmp.copy(gb).applyMatrix4(m.matrixWorld);
+        result.union(tmp);
+      }
+    }
+  });
+  return result;
+}
+
 async function loadWeapon(cfg: WeaponConfig): Promise<ActiveWeapon | null> {
   const url = `${MODEL_BASE}${cfg.slug}.glb`;
   let gltf;
@@ -543,10 +599,12 @@ async function loadWeapon(cfg: WeaponConfig): Promise<ActiveWeapon | null> {
   const wrap = new THREE.Group();
   const inner = gltf.scene;
 
+  // park inner under a temporary parent at origin so meshOnlyBbox is in
+  // a clean local frame, then recompute with inner properly mounted.
   const tmpWrap = new THREE.Group();
   tmpWrap.add(inner);
   tmpWrap.updateMatrixWorld(true);
-  const bbox = new THREE.Box3().setFromObject(tmpWrap);
+  const bbox = meshOnlyBbox(tmpWrap);
   const size = new THREE.Vector3(); bbox.getSize(size);
   const center = new THREE.Vector3(); bbox.getCenter(center);
   const maxDim = Math.max(size.x, size.y, size.z) || 1;

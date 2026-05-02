@@ -81,13 +81,13 @@
   },
   {
     "slug": "weapon_sword",
-    "uid": "d4b8ce06264646aa825e79ef2647db8b",
-    "name": "Cyberpunk Blade",
-    "author": "Ramhat",
-    "license": "CC Attribution-NonCommercial-ShareAlike",
-    "source": "https://sketchfab.com/3d-models/none-d4b8ce06264646aa825e79ef2647db8b",
-    "faceCount": 6739,
-    "bytes": 4223132
+    "uid": "ef79d989a32e476884b9c0ed1dc68134",
+    "name": "Celtic Sword",
+    "author": "Urizel",
+    "license": "CC Attribution",
+    "source": "https://sketchfab.com/3d-models/none-ef79d989a32e476884b9c0ed1dc68134",
+    "faceCount": 4344,
+    "bytes": 1985840
   },
   {
     "slug": "weapon_anim",

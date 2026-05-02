@@ -8,6 +8,11 @@
 import type { Player } from '../types.ts';
 import { emit } from '../shared/events.ts';
 
+// Each helper mutates the field and emits the corresponding event.
+// Callers must only invoke them at points where the value is actually
+// expected to change — there is intentionally no "no-op guard"; if you
+// hit a redundant call, that is a bug at the call site, not here.
+
 export function setEnergy(player: Player, newEnergy: number): void {
   player.energy = newEnergy;
   emit({ type: 'ENERGY_CHANGED', player: player.id, newEnergy });
