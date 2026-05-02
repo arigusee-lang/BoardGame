@@ -35,6 +35,7 @@ import {
   createStatusInstance,
   rollBuildingDraftStatuses
 } from './cards.ts';
+import { setEnergy, setSupply } from './playerResources.ts';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -305,7 +306,7 @@ export function confirmFoundationUse(): void {
     return;
   }
 
-  currentPlayer.supply -= foundationCost;
+  setSupply(currentPlayer, currentPlayer.supply - foundationCost);
 
   // 1) Remove all building abilities by removing the building from player's building list.
   currentPlayer.buildings = currentPlayer.buildings.filter((building: Building) => building.id !== targetBuilding.id);
@@ -321,7 +322,7 @@ export function confirmFoundationUse(): void {
   // 7) Refund 50% of destroyed building supply cost.
   const destroyedSupplyCost = getBuildingSupplyCostByType(targetBuilding.type as BuildingType);
   const refund = Math.floor(destroyedSupplyCost * 0.5);
-  currentPlayer.supply += refund;
+  setSupply(currentPlayer, currentPlayer.supply + refund);
 
   addLog(
     `Foundation destroyed ${getBuildingDisplayName(targetBuilding)}. Refunded ${refund} Supply and increased Player ${currentPlayer.id} base HP cap by 5.`
@@ -392,7 +393,7 @@ export function activateArmoryProduction(buildingId: string): void {
     return;
   }
 
-  currentPlayer.supply -= supplyCost;
+  setSupply(currentPlayer, currentPlayer.supply - supplyCost);
   const producedAt = getBuildingDisplayName(building);
   const grantedStatusIds = getBuildingGrantedStatusIds(building);
   const createdCard: Card = {
@@ -428,7 +429,7 @@ export function activateReplicatorProduction(buildingId: string): void {
     return;
   }
 
-  currentPlayer.supply -= supplyCost;
+  setSupply(currentPlayer, currentPlayer.supply - supplyCost);
   const producedAt = getBuildingDisplayName(building);
   const grantedStatusIds = getBuildingGrantedStatusIds(building);
   const createdCard: Card = {
@@ -464,7 +465,7 @@ export function activateWorkshopProduction(buildingId: string): void {
     return;
   }
 
-  currentPlayer.supply -= supplyCost;
+  setSupply(currentPlayer, currentPlayer.supply - supplyCost);
   const producedAt = getBuildingDisplayName(building);
   const grantedStatusIds = getBuildingGrantedStatusIds(building);
   const createdCard: Card = {
@@ -498,11 +499,11 @@ export function activateDatacenterObtain(buildingId: string): void {
     return;
   }
 
-  currentPlayer.energy -= energyCost;
+  setEnergy(currentPlayer, currentPlayer.energy - energyCost);
   building.obtainUsedThisTurn = true;
   const hasAdjacentWorkshop = isWorkshopAdjacentToDatacenter(currentPlayer.id, building.id);
   const gainedSupply = hasAdjacentWorkshop ? 8 : 5;
-  currentPlayer.supply += gainedSupply;
+  setSupply(currentPlayer, currentPlayer.supply + gainedSupply);
   addLog(
     `Player ${currentPlayer.id} used Obtain (${getBuildingDisplayName(building)}) and gained ${gainedSupply} Supply.`
   );
@@ -528,7 +529,7 @@ export function activateDatacenterProduction(buildingId: string): void {
     addLog('Not enough Supply to create a Specialist card.');
     return;
   }
-  currentPlayer.supply -= supplyCost;
+  setSupply(currentPlayer, currentPlayer.supply - supplyCost);
   const createdCard = createProducedDroneCardFromBuilding(currentPlayer.id, building, CARD_LIBRARY.SPECIALIST.id);
   currentPlayer.deck.push(createdCard);
   building.createSpecialistCooldown = 1;
@@ -577,7 +578,7 @@ export function activateGearStationProduction(buildingId: string): void {
     addLog('Not enough Supply to create a Ghostblade card.');
     return;
   }
-  currentPlayer.supply -= supplyCost;
+  setSupply(currentPlayer, currentPlayer.supply - supplyCost);
   const createdCard = createProducedDroneCardFromBuilding(currentPlayer.id, building, CARD_LIBRARY.CREATE_GHOSTBLADE.id);
   currentPlayer.deck.push(createdCard);
   building.createGhostbladeCooldown = 1;
@@ -600,7 +601,7 @@ export function activateAssemblyLineDraw(buildingId: string): void {
     addLog('No cards available to draw.');
     return;
   }
-  currentPlayer.energy -= energyCost;
+  setEnergy(currentPlayer, currentPlayer.energy - energyCost);
   drawCards(currentPlayer, 1);
   addLog(`Player ${currentPlayer.id} used Draw (${getBuildingDisplayName(building)}) and drew 1 card.`);
   renderUI();
@@ -625,7 +626,7 @@ export function activateAssemblyLineProduction(buildingId: string): void {
     addLog('Not enough Supply to create an Artillery card.');
     return;
   }
-  currentPlayer.supply -= supplyCost;
+  setSupply(currentPlayer, currentPlayer.supply - supplyCost);
   const createdCard = createProducedDroneCardFromBuilding(currentPlayer.id, building, CARD_LIBRARY.ARTILLERY.id);
   currentPlayer.deck.push(createdCard);
   building.createArtilleryCooldown = 1;
@@ -658,7 +659,7 @@ export function activateBuildingUpgrade(buildingId: string): void {
     const alreadyGranted = new Set(getBuildingGrantedStatusIds(building));
     const options = (BUILDING_PERK_DRAFT_POOL[building.type] ?? []).filter((statusId: StatusId) => !alreadyGranted.has(statusId)).slice(0, 8);
     if (options.length === 0) {
-      currentPlayer.supply -= upgradeCost;
+      setSupply(currentPlayer, currentPlayer.supply - upgradeCost);
       building.upgraded = true;
       addLog(`Player ${currentPlayer.id} upgraded ${getBuildingDisplayName(building)} for ${upgradeCost} Supply.`);
       renderUI();
@@ -672,7 +673,7 @@ export function activateBuildingUpgrade(buildingId: string): void {
     return;
   }
 
-  currentPlayer.supply -= upgradeCost;
+  setSupply(currentPlayer, currentPlayer.supply - upgradeCost);
   building.upgraded = true;
   addLog(`Player ${currentPlayer.id} upgraded ${getBuildingDisplayName(building)} for ${upgradeCost} Supply.`);
   renderUI();
@@ -708,7 +709,7 @@ export function confirmBuildingUpgradeStatusSelection(): void {
     addLog('Selected upgrade status is not valid.');
     return;
   }
-  currentPlayer.supply -= upgradeCost;
+  setSupply(currentPlayer, currentPlayer.supply - upgradeCost);
   building.upgraded = true;
   if (!building.upgradeStatusIds) {
     building.upgradeStatusIds = [];
@@ -765,7 +766,7 @@ export function confirmArmoryBuildPlacement(): void {
     return;
   }
 
-  currentPlayer.supply -= armoryCard.supplyCost;
+  setSupply(currentPlayer, currentPlayer.supply - armoryCard.supplyCost);
   const building = createBuilding(currentPlayer.id, armoryCard.buildingType, squareKey, {
     assignedStatusId: statusId
   });
@@ -815,7 +816,7 @@ export function confirmReplicatorBuildPlacement(): void {
     return;
   }
 
-  currentPlayer.supply -= replicatorCard.supplyCost;
+  setSupply(currentPlayer, currentPlayer.supply - replicatorCard.supplyCost);
   const building = createBuilding(currentPlayer.id, replicatorCard.buildingType, squareKey, {
     assignedStatusId: statusId
   });
@@ -867,7 +868,7 @@ export function confirmWorkshopBuildPlacement(): void {
     return;
   }
 
-  currentPlayer.supply -= workshopCard.supplyCost;
+  setSupply(currentPlayer, currentPlayer.supply - workshopCard.supplyCost);
   const building = createBuilding(currentPlayer.id, workshopCard.buildingType, squareKey, {
     assignedStatusId: statusId
   });
@@ -916,7 +917,7 @@ export function confirmDatacenterBuildPlacement(): void {
     return;
   }
 
-  currentPlayer.supply -= datacenterCard.supplyCost;
+  setSupply(currentPlayer, currentPlayer.supply - datacenterCard.supplyCost);
   const building = createBuilding(currentPlayer.id, datacenterCard.buildingType, squareKey, {
     assignedStatusId: statusId
   });
@@ -961,7 +962,7 @@ export function confirmGearStationBuildPlacement(): void {
     return;
   }
 
-  currentPlayer.supply -= card.supplyCost;
+  setSupply(currentPlayer, currentPlayer.supply - card.supplyCost);
   const building = createBuilding(currentPlayer.id, card.buildingType, squareKey, {
     assignedStatusId: statusId
   });
@@ -1005,7 +1006,7 @@ export function confirmAssemblyLineBuildPlacement(): void {
     return;
   }
 
-  currentPlayer.supply -= card.supplyCost;
+  setSupply(currentPlayer, currentPlayer.supply - card.supplyCost);
   const building = createBuilding(currentPlayer.id, card.buildingType, squareKey, {
     assignedStatusId: statusId
   });
@@ -1068,7 +1069,7 @@ export function handleOverloadTargetClick(hit: HitUserData): void {
     return;
   }
 
-  currentPlayer.energy -= 5;
+  setEnergy(currentPlayer, currentPlayer.energy - 5);
   building.overloadUsedThisTurn = true;
   target!.overloadBonusMovementThisTurn = (target!.overloadBonusMovementThisTurn ?? 0) + movementGain;
   addLog(

@@ -48,6 +48,7 @@ import {
   getSpecialistEmpCooldownTurns,
 } from '../engine/unitStats.ts';
 import { getCardEnergyCost } from '../engine/cards.ts';
+import { setEnergy, setMaxEnergy } from '../engine/playerResources.ts';
 import {
   canBuildingBeUpgraded,
   getBuildingUpgradeSupplyCost,
@@ -97,9 +98,9 @@ export function refreshPlayerMaxEnergy(playerId: PlayerId, clampEnergy: boolean 
   }
   const datacenterCount = (player.buildings ?? []).filter((building) => building.type === 'DATACENTER').length;
   const computedMaxEnergy = MAX_ENERGY + datacenterCount * 5;
-  player.maxEnergy = computedMaxEnergy;
+  setMaxEnergy(player, computedMaxEnergy);
   if (clampEnergy) {
-    player.energy = Math.min(player.energy, computedMaxEnergy);
+    setEnergy(player, Math.min(player.energy, computedMaxEnergy));
   }
   return computedMaxEnergy;
 }

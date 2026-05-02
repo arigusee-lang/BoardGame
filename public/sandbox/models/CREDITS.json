@@ -58,5 +58,45 @@
     "source": "https://sketchfab.com/3d-models/none-01674a892f414c0681afdeb563cc8e13",
     "faceCount": 898,
     "bytes": 119604
+  },
+  {
+    "slug": "weapon_pistol",
+    "uid": "5f6ec54257de449cacc8c872660b40d3",
+    "name": "Pistol",
+    "author": "DJMaesen",
+    "license": "CC Attribution",
+    "source": "https://sketchfab.com/3d-models/none-5f6ec54257de449cacc8c872660b40d3",
+    "faceCount": 2919,
+    "bytes": 3356148
+  },
+  {
+    "slug": "weapon_rifle",
+    "uid": "849b7cdf8622487485febc40db89e734",
+    "name": "Low-Poly AKM",
+    "author": "TastyTony",
+    "license": "CC Attribution",
+    "source": "https://sketchfab.com/3d-models/none-849b7cdf8622487485febc40db89e734",
+    "faceCount": 6910,
+    "bytes": 959936
+  },
+  {
+    "slug": "weapon_sword",
+    "uid": "d4b8ce06264646aa825e79ef2647db8b",
+    "name": "Cyberpunk Blade",
+    "author": "Ramhat",
+    "license": "CC Attribution-NonCommercial-ShareAlike",
+    "source": "https://sketchfab.com/3d-models/none-d4b8ce06264646aa825e79ef2647db8b",
+    "faceCount": 6739,
+    "bytes": 4223132
+  },
+  {
+    "slug": "weapon_anim",
+    "uid": "26adfd631730494ab0fc80c806eada77",
+    "name": "Colt M1911",
+    "author": "Ole Gunnar Isager",
+    "license": "CC Attribution",
+    "source": "https://sketchfab.com/3d-models/none-26adfd631730494ab0fc80c806eada77",
+    "faceCount": 2059,
+    "bytes": 3659356
   }
 ]

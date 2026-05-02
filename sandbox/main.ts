@@ -16,6 +16,8 @@
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
+import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { SimplexNoise } from 'three/examples/jsm/math/SimplexNoise.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 
@@ -31,7 +33,7 @@ const SPRINT_SPEED = 12;
 const JUMP_SPEED = 9;
 const MOUSE_SENS = 0.0022;
 const PITCH_LIMIT = Math.PI / 2 - 0.05;
-const GRASS_COUNT = 18000;
+const GRASS_COUNT = 26000;
 
 const MODEL_BASE = '/sandbox/models/';
 
@@ -45,7 +47,7 @@ const infoEl = document.getElementById('info')!;
 
 // --- renderer / scene ------------------------------------------------------
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+const renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -59,7 +61,7 @@ scene.background = new THREE.Color(0x070b18);
 const pmrem = new THREE.PMREMGenerator(renderer);
 scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 
-const camera = new THREE.PerspectiveCamera(72, window.innerWidth / window.innerHeight, 0.05, 1200);
+const camera = new THREE.PerspectiveCamera(72, window.innerWidth / window.innerHeight, 0.1, 1500);
 scene.add(camera);
 
 window.addEventListener('resize', () => {
@@ -156,15 +158,40 @@ function surfaceRadius(unitDir: THREE.Vector3): number {
 
 // --- grass instancing ------------------------------------------------------
 
+/**
+ * Build a grass-tuft geometry: 3 crossed quads at 60° around the Y axis.
+ * Each quad tapers slightly toward the top so it reads as blades, not boards.
+ * The resulting tuft looks similar from every viewing direction.
+ */
+function makeGrassTuft(): THREE.BufferGeometry {
+  const W = 0.16;       // base half-width
+  const H = 0.55;       // height
+  const TopK = 0.3;     // how much narrower the top is
+  const verts: number[] = [];
+  const uvs: number[] = [];
+  for (let i = 0; i < 3; i++) {
+    const yaw = (i * Math.PI) / 3;
+    const cs = Math.cos(yaw), sn = Math.sin(yaw);
+    const bx1 = -W * cs,        bz1 = -W * sn;
+    const bx2 =  W * cs,        bz2 =  W * sn;
+    const tx2 =  W * cs * TopK, tz2 =  W * sn * TopK;
+    const tx1 = -W * cs * TopK, tz1 = -W * sn * TopK;
+    // tri 1
+    verts.push(bx1, 0, bz1,  bx2, 0, bz2,  tx2, H, tz2);
+    uvs.push(0, 0,  1, 0,  1, 1);
+    // tri 2
+    verts.push(bx1, 0, bz1,  tx2, H, tz2,  tx1, H, tz1);
+    uvs.push(0, 0,  1, 1,  0, 1);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  g.computeVertexNormals();
+  return g;
+}
+
 {
-  const bladeGeom = new THREE.BufferGeometry();
-  bladeGeom.setAttribute('position', new THREE.Float32BufferAttribute([
-    -0.05, 0.0, 0.0,
-     0.05, 0.0, 0.0,
-     0.00, 0.4, 0.0,
-  ], 3));
-  bladeGeom.setIndex([0, 1, 2]);
-  bladeGeom.computeVertexNormals();
+  const bladeGeom = makeGrassTuft();
 
   const bladeMat = new THREE.MeshStandardMaterial({
     color: 0xffffff,
@@ -173,6 +200,9 @@ function surfaceRadius(unitDir: THREE.Vector3): number {
     metalness: 0,
   });
   const grass = new THREE.InstancedMesh(bladeGeom, bladeMat, GRASS_COUNT);
+  // disable frustum culling: the bbox is local to the tuft mesh and we have
+  // instances all over the planet, so the renderer must consider every frame.
+  grass.frustumCulled = false;
 
   const m = new THREE.Matrix4();
   const q = new THREE.Quaternion();
@@ -181,15 +211,17 @@ function surfaceRadius(unitDir: THREE.Vector3): number {
   const pos = new THREE.Vector3();
   const scl = new THREE.Vector3();
   const colorTmp = new THREE.Color();
-  const c1 = new THREE.Color(0x5d8a32);
-  const c2 = new THREE.Color(0x86a64a);
+  const cBase = new THREE.Color(0x5d8a32);
+  const cTop  = new THREE.Color(0x9bc056);
+  const cDry  = new THREE.Color(0xa18d3e);
 
   for (let i = 0; i < GRASS_COUNT; i++) {
     dir.randomDirection();
     const r = surfaceRadius(dir);
 
+    // skip on rocky highlands
     const altNorm = (r - PLANET_RADIUS) / TERRAIN_AMPLITUDE;
-    if (altNorm > 0.5) {
+    if (altNorm > 0.45) {
       m.makeScale(0, 0, 0);
       grass.setMatrixAt(i, m);
       continue;
@@ -199,13 +231,18 @@ function surfaceRadius(unitDir: THREE.Vector3): number {
     q.setFromUnitVectors(upY, dir);
     const yawQ = new THREE.Quaternion().setFromAxisAngle(dir, Math.random() * Math.PI * 2);
     q.multiply(yawQ);
-    const sH = 0.6 + Math.random() * 1.0;
-    const sW = 0.7 + Math.random() * 0.7;
+    const sH = 0.7 + Math.random() * 1.1;
+    const sW = 0.85 + Math.random() * 0.6;
     scl.set(sW, sH, sW);
     m.compose(pos, q, scl);
     grass.setMatrixAt(i, m);
 
-    colorTmp.copy(c1).lerp(c2, Math.random());
+    // green palette with occasional dry tuft
+    if (Math.random() < 0.06) {
+      colorTmp.copy(cDry);
+    } else {
+      colorTmp.copy(cBase).lerp(cTop, Math.random());
+    }
     grass.setColorAt(i, colorTmp);
   }
   grass.instanceMatrix.needsUpdate = true;
@@ -350,6 +387,10 @@ function updateFragments(dt: number): void {
 // --- glb loading & scattered prop placement -------------------------------
 
 const loader = new GLTFLoader();
+const draco = new DRACOLoader();
+draco.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
+loader.setDRACOLoader(draco);
+loader.setMeshoptDecoder(MeshoptDecoder);
 
 interface NormalizedProp {
   template: THREE.Group; // wrapper, scaled and centred so base sits at y=0
@@ -494,9 +535,10 @@ const weaponPool: ActiveWeapon[] = [];
 let activeIndex = 0;
 
 async function loadWeapon(cfg: WeaponConfig): Promise<ActiveWeapon | null> {
+  const url = `${MODEL_BASE}${cfg.slug}.glb`;
   let gltf;
-  try { gltf = await loader.loadAsync(`${MODEL_BASE}${cfg.slug}.glb`); }
-  catch (e) { console.warn(`[weapon] missing ${cfg.slug}:`, e); return null; }
+  try { gltf = await loader.loadAsync(url); }
+  catch (e) { console.warn(`[weapon] FAIL ${cfg.slug} from ${url}:`, e); return null; }
 
   const wrap = new THREE.Group();
   const inner = gltf.scene;
@@ -527,8 +569,12 @@ async function loadWeapon(cfg: WeaponConfig): Promise<ActiveWeapon | null> {
       if (!attackClip && keys.some(k => n.includes(k))) attackClip = clip;
     }
     if (!attackClip) attackClip = gltf.animations[0];
-    console.log(`[weapon] ${cfg.slug} clips: ${gltf.animations.map(c => c.name).join(', ')} → attack="${attackClip?.name}"`);
   }
+
+  let meshCount = 0;
+  inner.traverse(c => { if ((c as THREE.Mesh).isMesh) meshCount++; });
+
+  console.log(`[weapon] ok ${cfg.slug}: meshes=${meshCount}, bbox=${size.x.toFixed(2)}x${size.y.toFixed(2)}x${size.z.toFixed(2)}, scale=${s.toFixed(3)}, clips=[${gltf.animations.map(c => c.name).join(', ')}]${attackClip ? ` → attack="${attackClip.name}"` : ''}`);
 
   return { config: cfg, group: wrap, mixer, attackClip, cooldown: 0, procRecoil: 0, procSwing: 0 };
 }

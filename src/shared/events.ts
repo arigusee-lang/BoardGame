@@ -77,7 +77,12 @@ export type GameEvent =
   | { type: 'UNIT_STATUS_REMOVED'; unitId: string; statusId: string }
 
   // Base health / destruction (granular alternative to snapshot).
-  | { type: 'BASE_DAMAGED'; player: PlayerId; damage: number; newHp: number };
+  | { type: 'BASE_DAMAGED'; player: PlayerId; damage: number; newHp: number }
+
+  // Player resource changes.
+  | { type: 'ENERGY_CHANGED'; player: PlayerId; newEnergy: number }
+  | { type: 'MAX_ENERGY_CHANGED'; player: PlayerId; newMaxEnergy: number }
+  | { type: 'SUPPLY_CHANGED'; player: PlayerId; newSupply: number };
 
 /** Shape utility: pick a single event variant by its `type` discriminator. */
 export type EventOfType<T extends GameEvent['type']> = Extract<GameEvent, { type: T }>;

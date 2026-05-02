@@ -13,6 +13,7 @@ import {
 } from '../utils.ts';
 import { addLog } from '../shared/events.ts';
 import { getBuildingGrantedStatusIds } from './buildings.ts';
+import { setSupply } from './playerResources.ts';
 
 // ---------------------------------------------------------------------------
 // Basic status checks
@@ -258,7 +259,7 @@ export function awardSupplyFromDrone(player: Player, unit: Unit, baseSupply: num
   const plusSupplyBonus = droneHasPlusSupplyStatus(unit) ? Math.floor(baseSupply * 0.5) : 0;
   const providerBonus = droneHasProviderStatus(unit) ? 3 : 0;
   const total = baseSupply + plusSupplyBonus + providerBonus;
-  player.supply += total;
+  setSupply(player, player.supply + total);
   if (plusSupplyBonus > 0 || providerBonus > 0) {
     addLog(
       `${unit.unitName} ${reason} supply: ${baseSupply}` +

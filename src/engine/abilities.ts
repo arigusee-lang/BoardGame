@@ -22,6 +22,7 @@ import {
   casterHasRepairAbility
 } from './unitStats.ts';
 import { getCardEnergyCost } from './cards.ts';
+import { setEnergy, setSupply } from './playerResources.ts';
 
 // ---------------------------------------------------------------------------
 // Tactical Dash (Pawn Drone)
@@ -241,7 +242,7 @@ export function activateArtillerySetUp(unit: Unit | null | undefined): void {
 export function applyRepairAbility(caster: Unit, target: Unit): void {
   const currentPlayer = getCurrentPlayer();
   const repairEnergyCost = unitHasStatus(caster, DRONE_STATUS_LIBRARY.SMART.id) ? 0 : 5;
-  currentPlayer.energy -= repairEnergyCost;
+  setEnergy(currentPlayer, currentPlayer.energy - repairEnergyCost);
   caster.repairCooldown = 2;
   caster.movementUsedThisTurn = getUnitCurrentMoveRange(caster);
   caster.hasMoved = true;
@@ -353,7 +354,7 @@ export function applyShimmeringCloakSelection(level: number, squareKeys: string[
       addLog(`Not enough Energy to play ${cardTemplate.cardName}.`);
       return;
     }
-    currentPlayer.energy -= cardTemplate.energyCost;
+    setEnergy(currentPlayer, currentPlayer.energy - cardTemplate.energyCost);
     currentPlayer.hand.splice(state.selectedCardHandIndex!, 1);
     currentPlayer.discard.push(sourceCard);
   } else if ((state.mode as string) === 'shimmering_targeting_echo') {
@@ -419,9 +420,9 @@ export function executeHarvestDataAbsorb(sourceIndex: number, targetIndex: numbe
     return;
   }
 
-  currentPlayer.energy -= sourceTemplate.energyCost;
+  setEnergy(currentPlayer, currentPlayer.energy - sourceTemplate.energyCost);
   const absorbedEnergyCost = getCardEnergyCost(targetCard);
-  currentPlayer.supply += absorbedEnergyCost;
+  setSupply(currentPlayer, currentPlayer.supply + absorbedEnergyCost);
   currentPlayer.hand = currentPlayer.hand.filter((_: Card, index: number) => index !== sourceIndex && index !== targetIndex);
   currentPlayer.discard.push(sourceCard);
 

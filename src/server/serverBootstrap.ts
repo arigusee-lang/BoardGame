@@ -19,6 +19,7 @@ import { registerTurnManagerDeps, drawCards, applyProcessEchoPlayResult } from '
 import { registerAbilityDeps } from '../engine/abilities.ts';
 import { registerBuildingDeps } from '../engine/buildings.ts';
 import { removeUnitShield, applyShieldToUnit, addShimmeringCloak } from '../engine/unitStats.ts';
+import { setEnergy, setMaxEnergy } from '../engine/playerResources.ts';
 
 // Pure (no DOM, no Three.js) port of the function defined in src/ui/renderUI.ts.
 // The two implementations must stay in sync — Stage C+ will move both to
@@ -28,9 +29,9 @@ function refreshPlayerMaxEnergy(playerId: PlayerId, clampEnergy: boolean = true)
   if (!player) return MAX_ENERGY;
   const datacenterCount = (player.buildings ?? []).filter((b) => b.type === 'DATACENTER').length;
   const computedMaxEnergy = MAX_ENERGY + datacenterCount * 5;
-  player.maxEnergy = computedMaxEnergy;
+  setMaxEnergy(player, computedMaxEnergy);
   if (clampEnergy) {
-    player.energy = Math.min(player.energy, computedMaxEnergy);
+    setEnergy(player, Math.min(player.energy, computedMaxEnergy));
   }
   return computedMaxEnergy;
 }

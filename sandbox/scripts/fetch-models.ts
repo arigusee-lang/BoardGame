@@ -44,6 +44,7 @@ interface Query {
   query: string;         // search query
   maxFaces?: number;     // skip results above this
   minFaces?: number;
+  animated?: boolean;    // require animations
   preferUid?: string;    // override picker with a specific uid
 }
 
@@ -54,12 +55,19 @@ const QUERIES: Query[] = [
   { slug: 'crate',    query: 'low poly wooden crate',   maxFaces: 4000 },
   { slug: 'barrel',   query: 'low poly barrel',         maxFaces: 5000 },
   { slug: 'fox',      query: 'low poly fox',            maxFaces: 8000 },
+
+  // weapons
+  { slug: 'weapon_pistol', query: 'low poly pistol',         maxFaces: 8000 },
+  { slug: 'weapon_rifle',  query: 'low poly AK47',           maxFaces: 12000 },
+  { slug: 'weapon_sword',  query: 'low poly sword',          maxFaces: 8000 },
+  { slug: 'weapon_anim',   query: 'animated weapon',         maxFaces: 25000, animated: true },
 ];
 
-async function search(q: string): Promise<SearchResult[]> {
+async function search(q: string, animated = false): Promise<SearchResult[]> {
   const url = new URL('https://api.sketchfab.com/v3/search');
   url.searchParams.set('type', 'models');
   url.searchParams.set('downloadable', 'true');
+  if (animated) url.searchParams.set('animated', 'true');
   url.searchParams.set('q', q);
   url.searchParams.set('count', '24');
   url.searchParams.set('sort_by', '-likeCount');
@@ -135,8 +143,8 @@ async function main() {
       continue;
     }
 
-    console.log(`[search] "${q.query}"`);
-    const results = await search(q.query);
+    console.log(`[search] "${q.query}"${q.animated ? ' (animated)' : ''}`);
+    const results = await search(q.query, q.animated);
     const picked = pick(results, q);
     if (!picked) {
       console.warn(`  no match for "${q.query}"`);
