@@ -15,7 +15,7 @@
  *     to do with them.
  */
 
-import type { PlayerId } from '../types.ts';
+import type { DamageType, PlayerId, Unit } from '../types.ts';
 
 export interface ExplosionEffectOptions {
   particleCount?: number;
@@ -56,7 +56,28 @@ export type GameEvent =
       fromZ: number;
       toX: number;
       toZ: number;
-    };
+    }
+
+  // Unit lifecycle / state mutations. Each carries the new authoritative value
+  // for the field(s) it touches — receiving clients apply these directly to
+  // their state without needing a full snapshot.
+  | { type: 'UNIT_SUMMONED'; unit: Unit }
+  | {
+      type: 'UNIT_DAMAGED';
+      unitId: string;
+      damage: number;
+      newHp: number;
+      newShield: number;
+      damageType: DamageType;
+    }
+  | { type: 'UNIT_DESTROYED'; unitId: string }
+  | { type: 'UNIT_HEALED'; unitId: string; amount: number; newHp: number }
+  | { type: 'UNIT_SHIELDED'; unitId: string; newShield: number }
+  | { type: 'UNIT_STATUS_APPLIED'; unitId: string; statusId: string }
+  | { type: 'UNIT_STATUS_REMOVED'; unitId: string; statusId: string }
+
+  // Base health / destruction (granular alternative to snapshot).
+  | { type: 'BASE_DAMAGED'; player: PlayerId; damage: number; newHp: number };
 
 /** Shape utility: pick a single event variant by its `type` discriminator. */
 export type EventOfType<T extends GameEvent['type']> = Extract<GameEvent, { type: T }>;

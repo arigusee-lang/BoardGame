@@ -5,7 +5,7 @@ import { UNIT_LIBRARY } from '../data/unitLibrary.ts';
 import { DRONE_STATUS_LIBRARY } from '../data/statusLibrary.ts';
 import { state, nextUnitId } from '../state.ts';
 import { fromSquareKey, toSquareKey, isInsideBoard, gridToWorld, getDistance } from '../utils.ts';
-import { syncBoardVisualState, addLog } from '../shared/events.ts';
+import { syncBoardVisualState, addLog, emit } from '../shared/events.ts';
 import type { ExplosionOptions } from '../three/effects';
 import {
   boardGroup,
@@ -164,6 +164,8 @@ export function summonUnit(owner: PlayerId, squareKey: string, unitTypeId: UnitT
     grantedStatusIds
   } as unknown as Unit);
 
+  const summoned = state.units[state.units.length - 1];
+  emit({ type: 'UNIT_SUMMONED', unit: summoned });
   addLog(`Player ${owner} summoned ${template.unitName} on ${squareKey}.`);
   syncBoardVisualState();
 }
@@ -306,6 +308,17 @@ export function applyUnitAttack(attacker: Unit, targetUnit: Unit, options: Attac
     }
   }
 
+  // Granular damage event — receiving clients use this to update hp/shield
+  // without needing a full snapshot.
+  emit({
+    type: 'UNIT_DAMAGED',
+    unitId: resolvedTarget.id,
+    damage: damageToHealth,
+    newHp: resolvedTarget.hitPoints,
+    newShield: resolvedTarget.shieldHitPoints,
+    damageType: damageType as DamageType,
+  });
+
   if (resolvedTarget.hitPoints <= 0) {
     if (attacker.owner === state.currentPlayerId && attacker.owner !== resolvedTarget.owner) {
       const defeatedEnergy = getEnergyCostForUnitType(resolvedTarget.unitTypeId);
@@ -361,6 +374,12 @@ export function applyBaseAttack(attacker: Unit, targetPlayerId: PlayerId, target
   }
   baseOwner.baseHitPoints = Math.max(0, baseOwner.baseHitPoints - appliedDamage);
   attacker.hasAttacked = true;
+  emit({
+    type: 'BASE_DAMAGED',
+    player: targetPlayerId,
+    damage: appliedDamage,
+    newHp: baseOwner.baseHitPoints,
+  });
 
   const basePos = gridToWorld(targetSquare.x, targetSquare.z);
   basePos.y = 0.3;
@@ -536,6 +555,7 @@ export function getSquaresAlongLine(x0: number, z0: number, x1: number, z1: numb
 // ---------------------------------------------------------------------------
 
 export function removeUnit(unitId: string): void {
+  emit({ type: 'UNIT_DESTROYED', unitId });
   state.units = state.units.filter((unit: Unit) => unit.id !== unitId);
   movementAnimations.delete(unitId);
   if (state.selectedUnitId === unitId) {
