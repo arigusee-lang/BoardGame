@@ -55,20 +55,17 @@ const EXCLUDE_SWORD: string[] = []; // populate via `list weapon_sword` then re-
 const EXCLUDE_ANIM: string[] = [];
 
 const QUERIES: Query[] = [
-  { slug: 'tree',     query: 'low poly tree',           maxFaces: 8000, excludeUids: EXCLUDE_TREE },
-  { slug: 'rock',     query: 'low poly rock',           maxFaces: 5000 },
-  { slug: 'mushroom', query: 'low poly mushroom',       maxFaces: 6000 },
-  { slug: 'crate',    query: 'low poly wooden crate',   maxFaces: 4000 },
-  { slug: 'barrel',   query: 'low poly barrel',         maxFaces: 5000 },
-  { slug: 'fox',      query: 'low poly fox',            maxFaces: 8000 },
+  // PeterMikielewicz "Asteroid with minerals" — proper asteroid mesh
+  { slug: 'asteroid',   query: 'asteroid with minerals',    maxFaces: 20000,
+                        preferUid: '1cf93f26dbc34a08a31367ea8929117f' },
+  { slug: 'rock',       query: 'low poly rock',             maxFaces: 5000 },
+  // user77 "AKM Assault" — animated FPS rig (rifle + first-person arms in one glb)
+  { slug: 'fps_rifle',  query: 'AKM Assault FPS animated',  maxFaces: 60000, animated: true,
+                        preferUid: '6348dc53e3e249c6b297cb8f3f1e3e9b' },
 
-  // weapons
-  { slug: 'weapon_pistol', query: 'low poly pistol',         maxFaces: 8000 },
-  { slug: 'weapon_rifle',  query: 'low poly AK47',           maxFaces: 12000 },
-  // Celtic Sword by Urizel — clean stand-alone sword, 4344 faces
-  { slug: 'weapon_sword',  query: 'low poly stylized sword', maxFaces: 5000, excludeUids: EXCLUDE_SWORD,
-                           preferUid: 'ef79d989a32e476884b9c0ed1dc68134' },
-  { slug: 'weapon_anim',   query: 'animated weapon',         maxFaces: 25000, animated: true, excludeUids: EXCLUDE_ANIM },
+  // (kept for potential future reuse, but the minimal scene only needs the three above)
+  { slug: 'tree',     query: 'low poly tree',           maxFaces: 8000, excludeUids: EXCLUDE_TREE },
+  { slug: 'mushroom', query: 'low poly mushroom',       maxFaces: 6000 },
 ];
 
 // CLI: --refetch=slug1,slug2 forces re-download (skipping the already-present check)
@@ -104,7 +101,7 @@ function pick(results: SearchResult[], q: Query): SearchResult | null {
     if (!r.archives?.glb) continue;
     if (q.maxFaces && r.faceCount > q.maxFaces) continue;
     if (q.minFaces && r.faceCount < q.minFaces) continue;
-    if (r.archives.glb.size > 25 * 1024 * 1024) continue;
+    if (r.archives.glb.size > 60 * 1024 * 1024) continue; // 60 MB cap
     return r;
   }
   return null;

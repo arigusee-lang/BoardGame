@@ -54,9 +54,11 @@ import {
   getArtilleryAreaSquareKeys,
   getGaussLineSquareKeysFromTarget,
   hasBallisticStatus,
-  getArtilleryBallisticDamageAgainstUnit,
-  getArtilleryBallisticDamageAgainstBase,
-  getMinDistanceToAreaFromUnit
+  getMinDistanceToAreaFromUnit,
+  executeArtilleryBallisticAgainstUnit,
+  executeArtilleryBallisticAgainstBase,
+  executeArtilleryGauss,
+  executeArtilleryArea
 } from '../engine/artillery.ts';
 import { applyProcessEchoPlayResult } from '../engine/turnManager.ts';
 import {
@@ -470,19 +472,10 @@ export function handleArtilleryAttackTargetClick(hit: HitObject): void {
         addLog(`Ballistic target out of range (${artilleryRange}).`);
         return;
       }
-      const targetPos = gridToWorld(targetUnit.x, targetUnit.z);
-      playArtilleryShellShot(artillery.id, targetPos);
-      const ballisticDamage = getArtilleryBallisticDamageAgainstUnit(artillery);
-      applyUnitAttack(artillery, targetUnit, {
-        damageType: DAMAGE_TYPES.ATTACK,
-        damageAmount: ballisticDamage,
-        skipCoreMagnetRedirect: true,
-        skipAttackVisual: true
-      });
-      artillery.hasAttacked = true;
-      artillery.hasMoved = true;
-      artillery.movementUsedThisTurn = getUnitCurrentMoveRange(artillery);
-      addLog(`${artillery.owner} Artillery Ballistic struck ${targetUnit.unitName} for ${ballisticDamage}.`);
+      // Visual cue (client-only)
+      playArtilleryShellShot(artillery.id, gridToWorld(targetUnit.x, targetUnit.z));
+      // Game-state mutation lives in the engine
+      executeArtilleryBallisticAgainstUnit(artillery, targetUnit);
       state.mode = 'unit_selected';
       state.hoverSquareKey = null;
       state.ghostbladeTeleportCasterId = null;
@@ -506,14 +499,8 @@ export function handleArtilleryAttackTargetClick(hit: HitObject): void {
       addLog(`Ballistic base target out of range (${artilleryRange}).`);
       return;
     }
-    const targetPos = gridToWorld(sq.x, sq.z);
-    playArtilleryShellShot(artillery.id, targetPos);
-    const ballisticBaseDamage = getArtilleryBallisticDamageAgainstBase(artillery);
-    applyBaseAttack(artillery, targetBaseOwner as PlayerId, targetSquareKey, DAMAGE_TYPES.ATTACK, ballisticBaseDamage);
-    artillery.hasAttacked = true;
-    artillery.hasMoved = true;
-    artillery.movementUsedThisTurn = getUnitCurrentMoveRange(artillery);
-    addLog(`${artillery.owner} Artillery Ballistic struck Player ${targetBaseOwner} base for ${ballisticBaseDamage}.`);
+    playArtilleryShellShot(artillery.id, gridToWorld(sq.x, sq.z));
+    executeArtilleryBallisticAgainstBase(artillery, targetBaseOwner as PlayerId, targetSquareKey);
     state.mode = 'unit_selected';
     state.hoverSquareKey = null;
     state.ghostbladeTeleportCasterId = null;
@@ -534,53 +521,31 @@ export function handleArtilleryAttackTargetClick(hit: HitObject): void {
       addLog('Gauss targeting: choose an adjacent square or one of its highlighted line squares.');
       return;
     }
+    // Visual cues (client-only)
     const firstSquare = fromSquareKey(lineKeys[0]);
     const lastSquare = fromSquareKey(lineKeys[lineKeys.length - 1]);
-    const firstWorld = gridToWorld(firstSquare.x, firstSquare.z);
-    const lastWorld = gridToWorld(lastSquare.x, lastSquare.z);
-    playArtilleryGaussBeam(artillery.id, firstWorld, lastWorld);
-    const targets = state.units.filter((unit) => lineKeys.includes(toSquareKey(unit.x, unit.z)));
-    const artilleryDamage = getUnitCurrentAttackDamage(artillery);
-    for (const unit of targets) {
-      applyUnitAttack(artillery, unit, {
-        damageType: DAMAGE_TYPES.ATTACK,
-        damageAmount: artilleryDamage,
-        skipCoreMagnetRedirect: true,
-        skipAttackVisual: true
-      });
-    }
+    playArtilleryGaussBeam(
+      artillery.id,
+      gridToWorld(firstSquare.x, firstSquare.z),
+      gridToWorld(lastSquare.x, lastSquare.z),
+    );
     for (const basePlayerId of ['A', 'B'] as PlayerId[]) {
-      const baseOwner = state.players[basePlayerId];
       const frontalSquares = BASE_ARTILLERY_FRONT_SQUARES[basePlayerId];
-      let baseHits = 0;
       for (const squareKey of lineKeys) {
         if (frontalSquares?.has(squareKey)) {
-          baseHits += 1;
           const sq = fromSquareKey(squareKey);
           const pos = gridToWorld(sq.x, sq.z);
           playExplosionAt(new THREE.Vector3(pos.x, 0.5, pos.z), {
             particleCount: 14,
             duration: 0.62,
             speedMin: 1.2,
-            speedMax: 2.4
+            speedMax: 2.4,
           });
         }
       }
-      if (baseHits > 0 && !baseOwner.baseDestroyed) {
-        const totalBaseDamage = artilleryDamage * baseHits;
-        baseOwner.baseHitPoints = Math.max(0, baseOwner.baseHitPoints - totalBaseDamage);
-        addLog(`${artillery.owner} Artillery Gauss hit Player ${basePlayerId} base for ${totalBaseDamage} via vulnerable square(s).`);
-        if (baseOwner.baseHitPoints <= 0) {
-          destroyBase(basePlayerId);
-          state.winner = artillery.owner;
-          addLog(`Player ${artillery.owner} wins by destroying Player ${basePlayerId} base.`);
-        }
-      }
     }
-    artillery.hasAttacked = true;
-    artillery.hasMoved = true;
-    artillery.movementUsedThisTurn = getUnitCurrentMoveRange(artillery);
-    addLog(`${artillery.owner} Artillery fired Gauss beam through ${lineKeys.join(', ')} for ${artilleryDamage} each square.`);
+    // Engine handles damage + flag mutations + winner detection.
+    executeArtilleryGauss(artillery, lineKeys);
     state.mode = 'unit_selected';
     state.hoverSquareKey = null;
     state.ghostbladeTeleportCasterId = null;
@@ -603,63 +568,36 @@ export function handleArtilleryAttackTargetClick(hit: HitObject): void {
     return;
   }
 
+  // Visual cues (client-only)
   const center = new THREE.Vector3();
   for (const key of areaKeys) {
     center.add(gridToWorld(fromSquareKey(key).x, fromSquareKey(key).z));
   }
   center.multiplyScalar(1 / areaKeys.length);
   playArtilleryShellShot(artillery.id, center);
-
-  const targets = state.units.filter((unit) => areaKeys.includes(toSquareKey(unit.x, unit.z)));
-  const artilleryDamage = getUnitCurrentAttackDamage(artillery);
-  for (const unit of targets) {
-    applyUnitAttack(artillery, unit, {
-      damageType: DAMAGE_TYPES.ATTACK,
-      damageAmount: artilleryDamage,
-      skipCoreMagnetRedirect: true,
-      skipAttackVisual: true
-    });
-  }
-
   for (const basePlayerId of ['A', 'B'] as PlayerId[]) {
-    const baseOwner = state.players[basePlayerId];
     const frontalSquares = BASE_ARTILLERY_FRONT_SQUARES[basePlayerId];
-    let baseHits = 0;
     for (const squareKey of areaKeys) {
       if (frontalSquares?.has(squareKey)) {
-        baseHits += 1;
         const sq = fromSquareKey(squareKey);
         const pos = gridToWorld(sq.x, sq.z);
         playExplosionAt(new THREE.Vector3(pos.x, 0.5, pos.z), {
           particleCount: 14,
           duration: 0.62,
           speedMin: 1.2,
-          speedMax: 2.4
+          speedMax: 2.4,
         });
       }
     }
-    if (baseHits > 0 && !baseOwner.baseDestroyed) {
-      const totalBaseDamage = artilleryDamage * baseHits;
-      baseOwner.baseHitPoints = Math.max(0, baseOwner.baseHitPoints - totalBaseDamage);
-      addLog(`${artillery.owner} Artillery hit Player ${basePlayerId} base for ${totalBaseDamage} via vulnerable square(s).`);
-      if (baseOwner.baseHitPoints <= 0) {
-        destroyBase(basePlayerId);
-        state.winner = artillery.owner;
-        addLog(`Player ${artillery.owner} wins by destroying Player ${basePlayerId} base.`);
-      }
-    }
   }
-
   playExplosionAt(new THREE.Vector3(center.x, 0.55, center.z), {
     particleCount: 20,
     duration: 0.8,
     speedMin: 1.2,
-    speedMax: 2.9
+    speedMax: 2.9,
   });
-  artillery.hasAttacked = true;
-  artillery.hasMoved = true;
-  artillery.movementUsedThisTurn = getUnitCurrentMoveRange(artillery);
-  addLog(`${artillery.owner} Artillery bombarded ${areaKeys.join(', ')} for ${artilleryDamage} each square.`);
+  // Engine handles damage + flag mutations + winner detection.
+  executeArtilleryArea(artillery, areaKeys);
   state.mode = 'unit_selected';
   state.hoverSquareKey = null;
   state.ghostbladeTeleportCasterId = null;

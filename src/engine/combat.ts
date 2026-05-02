@@ -614,6 +614,15 @@ export function destroyBase(playerId: PlayerId): void {
 
   player.baseDestroyed = true;
 
+  // Setting state.winner is part of base destruction — never the input layer's
+  // job. Emits GAME_OVER for receiving clients.
+  if (!state.winner) {
+    const winner: PlayerId = playerId === 'A' ? 'B' : 'A';
+    state.winner = winner;
+    emit({ type: 'BASE_DESTROYED', player: playerId });
+    addLog(`Player ${winner} wins by destroying Player ${playerId} base.`);
+  }
+
   const baseMeshes = baseMeshesByPlayer.get(playerId) ?? [];
   for (const mesh of baseMeshes) {
     boardGroup.remove(mesh);
