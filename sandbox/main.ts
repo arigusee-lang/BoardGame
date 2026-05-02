@@ -16,6 +16,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { clone as cloneSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.js';
 
 // --- constants ------------------------------------------------------------
 
@@ -29,6 +30,10 @@ const JUMP_SPEED = 9;
 const MOUSE_SENS = 0.0022;
 const PITCH_LIMIT = Math.PI / 2 - 0.05;
 const ROCK_COUNT = 50;
+const MONSTER_COUNT = 8;
+const MONSTER_SPEED = 2.2;       // m/s along the surface
+const MONSTER_HEIGHT = 1.8;      // target height in metres after scaling
+const MONSTER_TOUCH_DIST = 1.4;  // when within this, monster stops (touched player)
 
 const MODEL_BASE = '/sandbox/models/';
 
@@ -183,16 +188,87 @@ function asteroidSurfacePoint(dir: THREE.Vector3): THREE.Vector3 | null {
   return hits[0]?.point.clone() ?? null;
 }
 
+// --- surface lookup table -------------------------------------------------
+
 /**
- * Find the surface "below" a player at world position `pos` — that is, the
- * intersection along `pos.normalize()` with the asteroid mesh. Returns the
- * surface point and the local up direction (= dir from center).
+ * Cache the asteroid's surface radius along directions sampled on a lat/lon
+ * grid. Per-frame surface queries are then O(1) lookups + bilinear interp,
+ * instead of raycasting 5k+ triangles every frame for the player and each
+ * flying fragment. The actual raycast is reserved for shooting (where we
+ * want exact hit points).
  */
-function findGroundUnder(pos: THREE.Vector3): { point: THREE.Vector3; up: THREE.Vector3 } | null {
+const SURF_LAT = 64;     // theta: 0..π
+const SURF_LON = 128;    // phi:   0..2π
+const surfTable = new Float32Array(SURF_LAT * SURF_LON);
+let surfTableReady = false;
+
+function buildSurfaceTable(): void {
+  if (!asteroidMesh) return;
+  const dir = new THREE.Vector3();
+  for (let i = 0; i < SURF_LAT; i++) {
+    const theta = (i / (SURF_LAT - 1)) * Math.PI;
+    const sinT = Math.sin(theta);
+    const cosT = Math.cos(theta);
+    for (let j = 0; j < SURF_LON; j++) {
+      const phi = (j / SURF_LON) * 2 * Math.PI;
+      dir.set(sinT * Math.cos(phi), cosT, sinT * Math.sin(phi));
+      const p = asteroidSurfacePoint(dir);
+      surfTable[i * SURF_LON + j] = p ? p.length() : asteroidBoundingRadius;
+    }
+  }
+  surfTableReady = true;
+  console.log(`[asteroid] surface table built: ${SURF_LAT}x${SURF_LON} samples`);
+}
+
+/**
+ * O(1) surface radius along a unit direction, bilinearly interpolated from
+ * the precomputed lat/lon table. Falls back to bounding radius if not ready.
+ */
+function getSurfaceRadius(dir: THREE.Vector3): number {
+  if (!surfTableReady) return asteroidBoundingRadius;
+  const dy = Math.max(-1, Math.min(1, dir.y));
+  const theta = Math.acos(dy);                   // 0..π
+  const phi = Math.atan2(dir.z, dir.x);          // -π..π
+  const phiN = phi >= 0 ? phi / (2 * Math.PI) : 1 + phi / (2 * Math.PI); // 0..1
+
+  const tIdx = (theta / Math.PI) * (SURF_LAT - 1);
+  const pIdx = phiN * SURF_LON;
+  const t0 = Math.floor(tIdx);
+  const t1 = Math.min(t0 + 1, SURF_LAT - 1);
+  const p0 = Math.floor(pIdx) % SURF_LON;
+  const p1 = (p0 + 1) % SURF_LON;
+  const tf = tIdx - t0;
+  const pf = pIdx - Math.floor(pIdx);
+
+  const v00 = surfTable[t0 * SURF_LON + p0];
+  const v01 = surfTable[t0 * SURF_LON + p1];
+  const v10 = surfTable[t1 * SURF_LON + p0];
+  const v11 = surfTable[t1 * SURF_LON + p1];
+  return (v00 * (1 - pf) + v01 * pf) * (1 - tf) + (v10 * (1 - pf) + v11 * pf) * tf;
+}
+
+/**
+ * Find the surface "below" a position. Two flavours:
+ *   - exact: raycast against the asteroid mesh (one ray, accurate for player)
+ *   - approx: bilinearly-interpolated table lookup (cheap, used for fragments)
+ *
+ * The table can underestimate the radius for convex/non-grid-aligned
+ * directions, which would cause the player to clip through the surface — so
+ * the player MUST use the exact path.
+ */
+function findGroundExact(pos: THREE.Vector3): { point: THREE.Vector3; up: THREE.Vector3 } | null {
+  if (pos.lengthSq() < 1e-6) return null;
   const up = pos.clone().normalize();
   const surface = asteroidSurfacePoint(up);
   if (!surface) return null;
   return { point: surface, up };
+}
+
+function findGroundApprox(pos: THREE.Vector3): { point: THREE.Vector3; up: THREE.Vector3 } | null {
+  if (pos.lengthSq() < 1e-6) return null;
+  const up = pos.clone().normalize();
+  const r = getSurfaceRadius(up);
+  return { point: up.clone().multiplyScalar(r), up };
 }
 
 // --- rocks ----------------------------------------------------------------
@@ -352,8 +428,8 @@ function updateFragments(dt: number): void {
     f.mesh.rotation.y += f.angVel.y * dt;
     f.mesh.rotation.z += f.angVel.z * dt;
 
-    // bounce on asteroid surface
-    const ground = findGroundUnder(f.mesh.position);
+    // bounce on asteroid surface (approx table — fragments are visual only)
+    const ground = findGroundApprox(f.mesh.position);
     if (ground) {
       const surfR = ground.point.length();
       const fragR = f.mesh.position.length();
@@ -557,6 +633,32 @@ renderer.domElement.addEventListener('click', () => {
 document.addEventListener('pointerlockchange', () => {
   const locked = document.pointerLockElement === renderer.domElement;
   overlayEl.style.display = locked ? 'none' : 'grid';
+  console.log(`[pointerlock] ${locked ? 'ACQUIRED' : 'RELEASED'} at t=${performance.now().toFixed(0)}ms`);
+});
+
+document.addEventListener('pointerlockerror', () => {
+  console.error('[pointerlock] error requesting lock');
+});
+
+window.addEventListener('error', (e) => {
+  console.error('[window.error]', e.message, 'at', e.filename + ':' + e.lineno);
+});
+
+window.addEventListener('unhandledrejection', (e) => {
+  console.error('[unhandledrejection]', e.reason);
+});
+
+renderer.domElement.addEventListener('webglcontextlost', (e) => {
+  e.preventDefault();
+  console.error('[webgl] context LOST — driver reset or GPU eviction');
+});
+renderer.domElement.addEventListener('webglcontextrestored', () => {
+  console.warn('[webgl] context RESTORED');
+});
+
+// Explicit ESC handling to log it
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') console.log('[esc] pressed');
 });
 
 document.addEventListener('mousemove', (e) => {
@@ -606,8 +708,9 @@ function tickPlayer(dt: number): void {
   player.velocity.copy(vTang).addScaledVector(up, vUpNew);
   player.position.addScaledVector(player.velocity, dt);
 
-  // ground contact via raycast against asteroid mesh
-  const ground = findGroundUnder(player.position);
+  // ground contact: exact raycast against the asteroid mesh — table lookup
+  // would underestimate radius at convex spots and let the player clip in.
+  const ground = findGroundExact(player.position);
   if (ground) {
     const playerR = player.position.length();
     const surfR = ground.point.length();
@@ -673,21 +776,27 @@ const clock = new THREE.Clock();
 
 function animate(): void {
   requestAnimationFrame(animate);
-  const dt = Math.min(clock.getDelta(), 0.05);
+  // Wrap the per-frame work in try/catch so a single transient error doesn't
+  // halt the loop (which previously caused pointer lock release & a "kicked
+  // back to menu" feel).
+  try {
+    const dt = Math.min(clock.getDelta(), 0.05);
+    tickPlayer(dt);
+    updateWeapon(dt);
+    updateFragments(dt);
 
-  tickPlayer(dt);
-  updateWeapon(dt);
-  updateFragments(dt);
+    if (flashTime > 0) {
+      flashTime -= dt;
+      if (flashTime <= 0) flashSprite.visible = false;
+    }
 
-  if (flashTime > 0) {
-    flashTime -= dt;
-    if (flashTime <= 0) flashSprite.visible = false;
+    const aliveRocks = rocks.filter(r => r.alive).length;
+    infoEl.textContent = `rocks: ${aliveRocks}/${rocks.length}  ·  fragments: ${fragments.length}  ·  alt: ${(player.position.length() - asteroidBoundingRadius).toFixed(2)}`;
+
+    renderer.render(scene, camera);
+  } catch (e) {
+    console.error('[animate]', e);
   }
-
-  const aliveRocks = rocks.filter(r => r.alive).length;
-  infoEl.textContent = `rocks: ${aliveRocks}/${rocks.length}  ·  fragments: ${fragments.length}  ·  alt: ${(player.position.length() - asteroidBoundingRadius).toFixed(2)}`;
-
-  renderer.render(scene, camera);
 }
 
 // --- bootstrap ------------------------------------------------------------
@@ -695,6 +804,7 @@ function animate(): void {
 (async () => {
   renderCredits();
   await loadAsteroid();
+  buildSurfaceTable();
 
   // Drop player above the highest point of the asteroid; gravity will land them.
   player.position.set(0, asteroidBoundingRadius * 1.2, 0);

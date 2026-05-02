@@ -16,7 +16,7 @@ import {
   clearSelection,
   canPlayerDirectlyTargetUnit
 } from '../utils.ts';
-import { renderUI, syncBoardVisualState, addLog } from '../shared/events.ts';
+import { renderUI, syncBoardVisualState, addLog, emit } from '../shared/events.ts';
 import {
   getUnitCurrentMoveRange,
   isUnitPlanted,
@@ -310,6 +310,7 @@ export function confirmFoundationUse(): void {
 
   // 1) Remove all building abilities by removing the building from player's building list.
   currentPlayer.buildings = currentPlayer.buildings.filter((building: Building) => building.id !== targetBuilding.id);
+  emit({ type: 'BUILDING_DESTROYED', buildingId: targetBuilding.id });
   // 2) Remove adjacency bonuses provided by destroyed building to adjacent building drone cards.
   refreshAdjacencyBonusesForPlayerCards(currentPlayer.id);
   // Keep other derived caps in sync after building removal (e.g., Datacenter bonus).
@@ -366,6 +367,7 @@ export function createBuilding(owner: PlayerId, buildingType: BuildingType | str
   };
 
   player.buildings.push(building);
+  emit({ type: 'BUILDING_PLACED', building });
   refreshAdjacencyBonusesForPlayerCards(owner);
   refreshPlayerMaxEnergy(owner, true);
   return building;
@@ -661,6 +663,12 @@ export function activateBuildingUpgrade(buildingId: string): void {
     if (options.length === 0) {
       setSupply(currentPlayer, currentPlayer.supply - upgradeCost);
       building.upgraded = true;
+      emit({
+        type: 'BUILDING_UPGRADED',
+        buildingId: building.id,
+        upgradeStatusIds: building.upgradeStatusIds ?? [],
+        upgraded: true,
+      });
       addLog(`Player ${currentPlayer.id} upgraded ${getBuildingDisplayName(building)} for ${upgradeCost} Supply.`);
       renderUI();
       return;
@@ -675,6 +683,12 @@ export function activateBuildingUpgrade(buildingId: string): void {
 
   setSupply(currentPlayer, currentPlayer.supply - upgradeCost);
   building.upgraded = true;
+  emit({
+    type: 'BUILDING_UPGRADED',
+    buildingId: building.id,
+    upgradeStatusIds: building.upgradeStatusIds ?? [],
+    upgraded: true,
+  });
   addLog(`Player ${currentPlayer.id} upgraded ${getBuildingDisplayName(building)} for ${upgradeCost} Supply.`);
   renderUI();
 }
@@ -718,6 +732,12 @@ export function confirmBuildingUpgradeStatusSelection(): void {
     building.upgradeStatusIds.push(selectedStatusId);
     applyBuildingStatusUpgradeToExistingCards(currentPlayer.id, building.id, selectedStatusId);
   }
+  emit({
+    type: 'BUILDING_UPGRADED',
+    buildingId: building.id,
+    upgradeStatusIds: building.upgradeStatusIds,
+    upgraded: true,
+  });
   refreshAdjacencyBonusesForPlayerCards(currentPlayer.id);
   addLog(
     `Player ${currentPlayer.id} upgraded ${getBuildingDisplayName(building)} for ${upgradeCost} Supply and added ${DRONE_STATUS_LIBRARY[selectedStatusId]?.statusName ?? selectedStatusId}.`

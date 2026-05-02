@@ -82,7 +82,12 @@ export type GameEvent =
   // Player resource changes.
   | { type: 'ENERGY_CHANGED'; player: PlayerId; newEnergy: number }
   | { type: 'MAX_ENERGY_CHANGED'; player: PlayerId; newMaxEnergy: number }
-  | { type: 'SUPPLY_CHANGED'; player: PlayerId; newSupply: number };
+  | { type: 'SUPPLY_CHANGED'; player: PlayerId; newSupply: number }
+
+  // Building lifecycle.
+  | { type: 'BUILDING_PLACED'; building: import('../types.ts').Building }
+  | { type: 'BUILDING_UPGRADED'; buildingId: string; upgradeStatusIds: string[]; upgraded: boolean }
+  | { type: 'BUILDING_DESTROYED'; buildingId: string };
 
 /** Shape utility: pick a single event variant by its `type` discriminator. */
 export type EventOfType<T extends GameEvent['type']> = Extract<GameEvent, { type: T }>;

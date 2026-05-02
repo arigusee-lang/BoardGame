@@ -11,7 +11,7 @@ import {
   getCurrentPlayer,
   canPlayerDirectlyTargetUnit
 } from '../utils.ts';
-import { addLog } from '../shared/events.ts';
+import { addLog, emit } from '../shared/events.ts';
 import { getBuildingGrantedStatusIds } from './buildings.ts';
 import { setSupply } from './playerResources.ts';
 
@@ -491,6 +491,7 @@ export function applyShieldToUnit(unit: Unit | null | undefined, shieldAmount: n
   } else {
     unit.shieldHitPoints = Math.max(unit.shieldHitPoints ?? 0, value);
   }
+  emit({ type: 'UNIT_SHIELDED', unitId: unit.id, newShield: unit.shieldHitPoints });
 }
 
 export function removeUnitShield(unit: Unit | null | undefined): number {
@@ -499,5 +500,6 @@ export function removeUnitShield(unit: Unit | null | undefined): number {
   }
   const removed = Math.max(0, unit.shieldHitPoints ?? 0);
   unit.shieldHitPoints = 0;
+  emit({ type: 'UNIT_SHIELDED', unitId: unit.id, newShield: 0 });
   return removed;
 }

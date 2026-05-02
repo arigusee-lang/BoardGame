@@ -62,6 +62,9 @@ const QUERIES: Query[] = [
   // user77 "AKM Assault" — animated FPS rig (rifle + first-person arms in one glb)
   { slug: 'fps_rifle',  query: 'AKM Assault FPS animated',  maxFaces: 60000, animated: true,
                         preferUid: '6348dc53e3e249c6b297cb8f3f1e3e9b' },
+  // Jerome Angeles "Low Poly Zombie" — rigged + walk animation
+  { slug: 'monster',    query: 'low poly zombie animated',  maxFaces: 10000, animated: true,
+                        preferUid: '9f8f0885b2f94c6890c4debaceac9421' },
 
   // (kept for potential future reuse, but the minimal scene only needs the three above)
   { slug: 'tree',     query: 'low poly tree',           maxFaces: 8000, excludeUids: EXCLUDE_TREE },

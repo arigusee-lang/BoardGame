@@ -62,18 +62,6 @@ export const unitEventHandlers = {
     playHitEffect(e.unitId);
   }) satisfies EventHandler<'UNIT_DAMAGED'>,
 
-  UNIT_DESTROYED: ((e) => {
-    const idx = state.units.findIndex((u) => u.id === e.unitId);
-    if (idx >= 0) state.units.splice(idx, 1);
-    const visual = unitVisualsById.get(e.unitId);
-    if (visual) {
-      boardGroup.remove(visual.root);
-      const cmIdx = clickableMeshes.indexOf(visual.clickableMesh);
-      if (cmIdx >= 0) clickableMeshes.splice(cmIdx, 1);
-      unitVisualsById.delete(e.unitId);
-    }
-  }) satisfies EventHandler<'UNIT_DESTROYED'>,
-
   UNIT_HEALED: ((e) => {
     const unit = findUnit(e.unitId);
     if (unit) unit.hitPoints = e.newHp;
@@ -88,15 +76,27 @@ export const unitEventHandlers = {
     const unit = findUnit(e.unitId);
     if (!unit) return;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const statusIds = unit.grantedStatusIds as any[];
-    if (!statusIds.includes(e.statusId)) statusIds.push(e.statusId);
+    const ids = unit.grantedStatusIds as any[];
+    if (!ids.includes(e.statusId)) ids.push(e.statusId);
   }) satisfies EventHandler<'UNIT_STATUS_APPLIED'>,
 
   UNIT_STATUS_REMOVED: ((e) => {
     const unit = findUnit(e.unitId);
     if (!unit) return;
-    const statusIds = unit.grantedStatusIds as string[];
-    const idx = statusIds.indexOf(e.statusId);
-    if (idx >= 0) statusIds.splice(idx, 1);
+    const ids = unit.grantedStatusIds as string[];
+    const idx = ids.indexOf(e.statusId);
+    if (idx >= 0) ids.splice(idx, 1);
   }) satisfies EventHandler<'UNIT_STATUS_REMOVED'>,
+
+  UNIT_DESTROYED: ((e) => {
+    const idx = state.units.findIndex((u) => u.id === e.unitId);
+    if (idx >= 0) state.units.splice(idx, 1);
+    const visual = unitVisualsById.get(e.unitId);
+    if (visual) {
+      boardGroup.remove(visual.root);
+      const cmIdx = clickableMeshes.indexOf(visual.clickableMesh);
+      if (cmIdx >= 0) clickableMeshes.splice(cmIdx, 1);
+      unitVisualsById.delete(e.unitId);
+    }
+  }) satisfies EventHandler<'UNIT_DESTROYED'>,
 };

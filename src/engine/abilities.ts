@@ -104,6 +104,7 @@ export function activateCoreMagnet(unit: Unit): void {
   unit.coreMagnetBulwarkCenterSquareKey = null;
   if (!beacon || canCoreMagnetHealThisTurn(unit)) {
     unit.hitPoints = Math.min(unit.maxHitPoints, unit.hitPoints + 5);
+    emit({ type: 'UNIT_HEALED', unitId: unit.id, amount: 5, newHp: unit.hitPoints });
     markCoreMagnetHealedThisTurn(unit);
   }
   if (!beacon) {
@@ -157,6 +158,7 @@ export function activateBulwarkCoreMagnet(unit: Unit, centerSquareKey: string): 
   unit.coreMagnetCooldown = beacon ? 0 : 3;
   if (!beacon || canCoreMagnetHealThisTurn(unit)) {
     unit.hitPoints = Math.min(unit.maxHitPoints, unit.hitPoints + 5);
+    emit({ type: 'UNIT_HEALED', unitId: unit.id, amount: 5, newHp: unit.hitPoints });
     markCoreMagnetHealedThisTurn(unit);
   }
   if (!beacon) {
@@ -277,6 +279,23 @@ export function applyRepairAbility(caster: Unit, target: Unit): void {
 
   state.mode = 'idle';
   state.repairTargetingCasterId = null;
+
+  // Emit healed events at the end (final hp). Idempotent on the receiving
+  // client (event applier writes the same final value).
+  emit({
+    type: 'UNIT_HEALED',
+    unitId: target.id,
+    amount: restored + mechaTargetBonusApplied,
+    newHp: target.hitPoints,
+  });
+  if (mechaSelfBonusApplied > 0) {
+    emit({
+      type: 'UNIT_HEALED',
+      unitId: caster.id,
+      amount: mechaSelfBonusApplied,
+      newHp: caster.hitPoints,
+    });
+  }
 
   playRepairCasterAnimation(caster.id);
   playRepairTargetAnimation(target.id);

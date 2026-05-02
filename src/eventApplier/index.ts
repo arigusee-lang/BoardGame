@@ -15,6 +15,7 @@ import { unitEventHandlers } from './unitEvents.ts';
 import { uiEventHandlers } from './uiEvents.ts';
 import { lifecycleEventHandlers } from './lifecycleEvents.ts';
 import { playerEventHandlers } from './playerEvents.ts';
+import { buildingEventHandlers } from './buildingEvents.ts';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyHandler = (event: any) => void;
@@ -25,6 +26,7 @@ const handlers: Partial<Record<GameEvent['type'], AnyHandler>> = {
   ...uiEventHandlers,
   ...lifecycleEventHandlers,
   ...playerEventHandlers,
+  ...buildingEventHandlers,
 };
 
 // Compile-time exhaustiveness check: any GameEvent variant not present in
