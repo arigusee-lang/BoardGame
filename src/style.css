@@ -1155,3 +1155,132 @@ body {
     width: 100%;
   }
 }
+
+/* ================================================================== */
+/* Lobby overlay                                                      */
+/* ================================================================== */
+
+.lobby-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(13, 19, 26, 0.92);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+.lobby-overlay.hidden { display: none; }
+
+.lobby-card {
+  background: var(--bg-ui);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 32px 40px;
+  width: min(420px, 92vw);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+}
+.lobby-card h2 {
+  margin: 0 0 8px;
+  color: var(--accent-a);
+  font-size: 22px;
+}
+.lobby-sub {
+  margin: 0 0 16px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.lobby-card input[type=text] {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.3);
+  color: var(--text);
+  font-size: 15px;
+  margin-bottom: 12px;
+  box-sizing: border-box;
+}
+.lobby-card input[type=text]:focus {
+  outline: none;
+  border-color: var(--accent-a);
+}
+.lobby-row {
+  display: flex;
+  gap: 8px;
+}
+.lobby-row button {
+  flex: 1;
+  padding: 10px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--accent-a);
+  background: linear-gradient(180deg, #2864c4, #1c4a96);
+  color: white;
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 15px;
+}
+.lobby-row button:hover {
+  filter: brightness(1.1);
+}
+.lobby-divider {
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+  margin: 12px 0 8px;
+}
+.lobby-roster {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0;
+}
+.lobby-roster li {
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.25);
+  margin-bottom: 6px;
+  font-size: 14px;
+}
+.lobby-roster .muted { color: var(--muted); margin-left: 8px; font-size: 12px; }
+.lobby-roster em { color: var(--accent-a); font-style: normal; font-weight: 600; margin-left: 4px; }
+
+.lobby-hint {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 12px;
+}
+.lobby-error {
+  background: rgba(220, 70, 70, 0.18);
+  border: 1px solid #d44;
+  color: #fbb;
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin-bottom: 14px;
+  font-size: 13px;
+}
+
+.lobby-secondary {
+  background: linear-gradient(180deg, #44505c, #2c3640) !important;
+  border-color: var(--line) !important;
+}
+
+/* "Who am I" badge in the top bar */
+.you-badge {
+  display: inline-block;
+  margin-left: 12px;
+  padding: 2px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 999px;
+  vertical-align: middle;
+}
+.you-badge.a { background: rgba(108, 165, 255, 0.18); color: var(--accent-a); border: 1px solid var(--accent-a); }
+.you-badge.b { background: rgba(255, 142, 150, 0.18); color: var(--accent-b); border: 1px solid var(--accent-b); }
+
+/* Disabled End Turn (multiplayer when it isn't your turn) */
+.end-turn:disabled,
+.end-turn.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  filter: grayscale(0.4);
+}

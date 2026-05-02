@@ -85,6 +85,25 @@ registerInputTargetingDeps({
 // --- Input handlers ---
 import { onPointerDown, onPointerMove, onKeyDown, onKeyUp } from './input/inputHandler.ts';
 
+// --- Multiplayer (network + lobby) ---
+import * as net from './network/index.ts';
+import { initLobby, setOfflineStartHandler } from './ui/lobby.ts';
+import { state as gameState } from './state.ts';
+import type { GameState } from './types';
+
+function replaceLocalStateFrom(snapshot: GameState): void {
+  // Copy every top-level field of the snapshot onto the live state object.
+  // The Proxy in src/state.ts forwards every read/write, so every existing
+  // import { state } stays valid.
+  for (const key of Object.keys(gameState) as Array<keyof GameState>) {
+    delete (gameState as unknown as Record<string, unknown>)[key as string];
+  }
+  Object.assign(gameState as unknown as Record<string, unknown>, snapshot);
+  // Re-render UI and 3D scene from the new state.
+  renderUI();
+  syncBoardVisualState();
+}
+
 // --- Init & start ---
 async function init() {
   initAxisLabels();
@@ -104,7 +123,23 @@ async function init() {
   endTurnBtn.addEventListener('click', () => dispatch({ type: 'END_TURN' }));
   renderer.setAnimationLoop(animate);
 
-  startGame();
+  // Network: events broadcast by the server are applied to the local UI/scene
+  // via the same eventApplier the engine uses for its in-page emissions.
+  net.onEvents((events) => applyEvents(events));
+  // Server-broadcast snapshots replace the local game state wholesale.
+  net.onSnapshot(replaceLocalStateFrom);
+
+  // Always open the WebSocket. If the URL has ?room=…&pid=… we'll auto-rejoin;
+  // otherwise the lobby overlay handles create/join.
+  net.start();
+
+  // The "Play offline" button on the home screen runs the game locally.
+  setOfflineStartHandler(() => startGame());
+
+  // Lobby overlay reads the URL and decides whether to show home / join /
+  // waiting. It hides itself once the first state_snapshot arrives, or
+  // when the user picks "Play offline".
+  initLobby();
 }
 
 init();

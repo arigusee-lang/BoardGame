@@ -15,6 +15,7 @@
 
 import type { Action } from './shared/actions.ts';
 import { applyAction } from './shared/reducer.ts';
+import * as net from './network/index.ts';
 
 /**
  * Dispatch a player action.
@@ -28,6 +29,17 @@ import { applyAction } from './shared/reducer.ts';
  * not yet wired through the reducer).
  */
 export function dispatch(action: Action): boolean {
+  // Multiplayer mode: forward the intent to the server. The server runs the
+  // reducer and broadcasts events + a fresh state snapshot; the network
+  // module wires those into the eventApplier and a state-replace handler.
+  // We do NOT also run the action locally — that would cause double-mutation
+  // when the snapshot comes back.
+  if (net.getIdentity() !== null && net.isConnected()) {
+    return net.sendAction(action);
+  }
+
+  // Single-player mode (no room). Run the reducer locally; events emitted
+  // during the call are picked up by the microtask sink (eventApplier).
   const result = applyAction(action);
   if (!result.ok) {
     console.warn('[actionDispatcher]', result.error);

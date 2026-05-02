@@ -23,6 +23,7 @@ import {
   overlayEl,
   droneStatsLeftEl,
   droneStatsRightEl,
+  endTurnBtn,
 } from './domSetup.ts';
 import {
   getBuildingDisplayName,
@@ -83,6 +84,7 @@ import {
   hasBallisticStatus,
 } from '../engine/artillery.ts';
 import { syncBoardVisualState } from '../bridge.ts';
+import { getPlayerName, getMyPlayerId, isMyTurn } from '../playerNames.ts';
 
 export function getPlayerMaxEnergy(player: Player): number {
   return player?.maxEnergy ?? MAX_ENERGY;
@@ -120,15 +122,21 @@ export function renderUI(): void {
   const playerBMaxEnergy = getPlayerMaxEnergy(playerB);
   const energyPct = Math.max(0, Math.min(100, (currentPlayer.energy / currentPlayerMaxEnergy) * 100));
 
+  const myPid = getMyPlayerId();
+  const turnLabel = myPid === null
+    ? `${getPlayerName(currentPlayer.id)}'s Turn`
+    : (isMyTurn(currentPlayer.id) ? `Your Turn (${getPlayerName(currentPlayer.id)})` : `Opponent's Turn (${getPlayerName(currentPlayer.id)})`);
+  const youBadge = myPid !== null ? `<span class="you-badge ${myPid.toLowerCase()}">You: ${getPlayerName(myPid)} (${myPid})</span>` : '';
+
   turnStatusEl.innerHTML = `
-    <div class="status-main">Player ${currentPlayer.id} Turn</div>
+    <div class="status-main">${turnLabel} ${youBadge}</div>
     <div class="base-hp-row">
       <div class="base-hp a">
-        <div class="base-hp-head">A Base <span>${aHp}</span></div>
+        <div class="base-hp-head">${getPlayerName('A')} <span>${aHp}</span></div>
         <div class="base-hp-track"><div class="base-hp-fill a" style="width: ${aPct}%"></div></div>
       </div>
       <div class="base-hp b">
-        <div class="base-hp-head">B Base <span>${bHp}</span></div>
+        <div class="base-hp-head">${getPlayerName('B')} <span>${bHp}</span></div>
         <div class="base-hp-track"><div class="base-hp-fill b" style="width: ${bPct}%"></div></div>
       </div>
     </div>
@@ -140,6 +148,13 @@ export function renderUI(): void {
       Left click: select card/unit/target. Right mouse hold: rotate camera.
     </div>
   `;
+
+  // In multiplayer, disable End Turn when it isn't this player's turn.
+  if (endTurnBtn) {
+    const myTurn = isMyTurn(currentPlayer.id);
+    endTurnBtn.disabled = !myTurn;
+    endTurnBtn.classList.toggle('disabled', !myTurn);
+  }
 
   const selectedUnit = getSelectedUnit();
   const selectedOwnedUnit =

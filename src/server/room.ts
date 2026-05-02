@@ -6,8 +6,14 @@
  */
 
 import type { ServerWebSocket } from 'bun';
-import type { PlayerId } from '../types.ts';
+import type { GameState, PlayerId } from '../types.ts';
 import type { PlayerInfo, ServerMessage } from '../shared/protocol.ts';
+import { createInitialGameState } from '../state.ts';
+
+export interface RoomStateContext {
+  state: GameState;
+  unitIdCounter: number;
+}
 
 export interface RoomPlayer {
   pid: string;
@@ -32,13 +38,18 @@ export class Room {
   readonly players: Map<string, RoomPlayer> = new Map();
   status: 'waiting' | 'playing' | 'ended' = 'waiting';
 
-  // Game state lives here once Stage C wires the reducer; placeholder for now.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  state: any = null;
+  // The room owns its own GameState + unit-ID counter. The server swaps this
+  // context into the engine's active slot before running the reducer for an
+  // action, so two concurrent rooms can never interfere.
+  readonly context: RoomStateContext;
 
   constructor(id: string) {
     this.id = id;
     this.createdAt = Date.now();
+    this.context = {
+      state: createInitialGameState(),
+      unitIdCounter: 1,
+    };
   }
 
   /** Total slots used (connected + disconnected within grace window). */

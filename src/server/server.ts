@@ -11,6 +11,10 @@
 import { RoomManager } from './roomManager.ts';
 import type { WsData } from './room.ts';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.ts';
+import { applyAction } from '../shared/reducer.ts';
+import { flushEvents } from '../shared/events.ts';
+import { setActiveContext } from '../state.ts';
+import { startGame as engineStartGame } from '../engine/turnManager.ts';
 
 const PORT = Number(process.env.PORT ?? 3001);
 const HEARTBEAT_INTERVAL_MS = 25_000;
@@ -116,6 +120,19 @@ const server = Bun.serve<WsData, never>({
             },
           });
           console.log(`[room ${room.id}] ${player.nickname} (${player.playerId}) joined`);
+
+          // Auto-start the game once both players are in the room.
+          if (room.status === 'waiting' && room.players.size === 2) {
+            setActiveContext(room.context);
+            engineStartGame();
+            const events = flushEvents();
+            room.status = 'playing';
+            if (events.length > 0) {
+              room.broadcast({ type: 'events', events });
+            }
+            room.broadcast({ type: 'state_snapshot', state: room.context.state });
+            console.log(`[room ${room.id}] game started`);
+          }
           return;
         }
 
@@ -133,8 +150,11 @@ const server = Bun.serve<WsData, never>({
             players: room.publicPlayers(),
           });
           room.broadcastExcept(player.pid, { type: 'player_reconnected', pid: player.pid });
+          // Push the current state to the rejoining client so the UI can recover.
+          if (room.status !== 'waiting') {
+            send(ws, { type: 'state_snapshot', state: room.context.state });
+          }
           console.log(`[room ${room.id}] ${player.nickname} (${player.playerId}) rejoined`);
-          // Stage C will follow up with a state_snapshot here.
           return;
         }
 
@@ -159,15 +179,32 @@ const server = Bun.serve<WsData, never>({
             send(ws, { type: 'action_rejected', reason: 'room_not_found' });
             return;
           }
-          // Stage B: action is accepted at the protocol layer but the reducer
-          // is not yet wired (the engine still mutates a global state singleton
-          // unsuitable for multi-room servers). Stage C parameterises the
-          // reducer with state and broadcasts the resulting events.
-          send(ws, {
-            type: 'action_rejected',
-            reason: 'reducer_not_yet_wired_on_server (Stage C)',
-          });
-          console.log(`[room ${roomId}] action ${msg.action.type} from ${pid} (no-op stub)`);
+          const player = room.players.get(pid);
+          if (!player) {
+            send(ws, { type: 'action_rejected', reason: 'player_not_in_room' });
+            return;
+          }
+
+          // Swap the room's state into the engine's active slot, run the
+          // reducer, drain any events emitted into the shared buffer, broadcast.
+          setActiveContext(room.context);
+          const result = applyAction(msg.action);
+          const events = flushEvents();
+
+          if (!result.ok) {
+            send(ws, { type: 'action_rejected', reason: result.error });
+            console.log(`[room ${roomId}] action ${msg.action.type} from ${pid} REJECTED: ${result.error}`);
+            return;
+          }
+
+          // Stage C MVP: broadcast events for animations/log + a full state
+          // snapshot for sync. Event refinement (semantic per-event state
+          // mutations) is a Stage C+ improvement.
+          if (events.length > 0) {
+            room.broadcast({ type: 'events', events });
+          }
+          room.broadcast({ type: 'state_snapshot', state: room.context.state });
+          console.log(`[room ${roomId}] action ${msg.action.type} from ${pid} OK (${events.length} events)`);
           return;
         }
 

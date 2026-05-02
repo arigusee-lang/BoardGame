@@ -69,10 +69,16 @@ async function main() {
   // Alice should have received a player_joined notification
   await waitMsg(alice, 'player_joined');
 
-  console.log('\n--- Bob sends a stub action ---');
+  console.log('\n--- Bob sends an END_TURN action (server runs the reducer) ---');
   send(bob, { type: 'action', action: { type: 'END_TURN' } });
-  const rejected = await waitMsg(bob, 'action_rejected');
-  console.log('  → rejected reason:', rejected.reason);
+  const events = await waitMsg(bob, 'events');
+  console.log(`  → got ${(events.events as unknown[]).length} events`);
+  await waitMsg(bob, 'state_snapshot');
+  console.log('  → got state snapshot');
+  // Alice should have received the same broadcast
+  await waitMsg(alice, 'events');
+  await waitMsg(alice, 'state_snapshot');
+  console.log('  → both clients received the broadcast');
 
   console.log('\n--- Bob disconnects, then rejoins ---');
   bob.ws.close();
