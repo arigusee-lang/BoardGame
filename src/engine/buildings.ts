@@ -16,8 +16,7 @@ import {
   clearSelection,
   canPlayerDirectlyTargetUnit
 } from '../utils.ts';
-import { renderUI, syncBoardVisualState } from '../bridge.ts';
-import { addLog } from '../ui/log.ts';
+import { renderUI, syncBoardVisualState, addLog } from '../shared/events.ts';
 import {
   getUnitCurrentMoveRange,
   isUnitPlanted,

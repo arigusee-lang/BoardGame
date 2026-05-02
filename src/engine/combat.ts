@@ -5,8 +5,7 @@ import { UNIT_LIBRARY } from '../data/unitLibrary.ts';
 import { DRONE_STATUS_LIBRARY } from '../data/statusLibrary.ts';
 import { state, nextUnitId } from '../state.ts';
 import { fromSquareKey, toSquareKey, isInsideBoard, gridToWorld, getDistance } from '../utils.ts';
-import { syncBoardVisualState } from '../bridge.ts';
-import { addLog } from '../ui/log.ts';
+import { syncBoardVisualState, addLog } from '../shared/events.ts';
 import type { ExplosionOptions } from '../three/effects';
 import {
   boardGroup,

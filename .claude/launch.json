@@ -2,9 +2,9 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "prod-local",
+      "name": "dev",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["vite", "preview", "--host"],
+      "runtimeArgs": ["vite", "--host"],
       "port": 5173,
       "autoPort": false
     }

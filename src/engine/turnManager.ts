@@ -3,8 +3,7 @@ import { TURN_DRAW_COUNT, SUPPLY_HARVEST_SQUARES, SUPPLY_HARVEST_REWARD } from '
 import { DRONE_STATUS_LIBRARY } from '../data/statusLibrary.ts';
 import { state, createEmptyProcessEcho } from '../state.ts';
 import { shuffle, toSquareKey, getCurrentPlayer } from '../utils.ts';
-import { renderUI, syncBoardVisualState } from '../bridge.ts';
-import { addLog } from '../ui/log.ts';
+import { renderUI, syncBoardVisualState, addLog } from '../shared/events.ts';
 import {
   unitHasStatus,
   hasBeaconCoreMagnet,

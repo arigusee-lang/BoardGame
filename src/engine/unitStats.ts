@@ -11,7 +11,7 @@ import {
   getCurrentPlayer,
   canPlayerDirectlyTargetUnit
 } from '../utils.ts';
-import { addLog } from '../ui/log.ts';
+import { addLog } from '../shared/events.ts';
 import { getBuildingGrantedStatusIds } from './buildings.ts';
 
 // ---------------------------------------------------------------------------
