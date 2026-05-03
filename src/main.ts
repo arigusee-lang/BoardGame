@@ -37,22 +37,12 @@ import { registerInputTargetingDeps } from './input/inputTargeting.ts';
 
 import { removeUnitShield, applyShieldToUnit, consumeSystemShockFollowUp } from './engine/unitStats.ts';
 import { addShimmeringCloak } from './engine/unitStats.ts';
-import { getUnitWorldPosition } from './three/effects.ts';
 import { drawCards, applyProcessEchoPlayResult } from './engine/turnManager.ts';
 import { dispatch } from './actionDispatcher.ts';
 
-// Engine effect callbacks are wired to event emission (no direct Three.js
-// access from the engine). Real effects run from src/eventApplier.ts when
-// the buffer is drained.
 registerCombatDeps({
   removeUnitShield,
   refreshPlayerMaxEnergy,
-  getUnitWorldPosition,
-  playRifleShot: (attackerId, targetPos) =>
-    emit({ type: 'EFFECT_RIFLE_SHOT', attackerId, targetPos: { x: targetPos.x, y: targetPos.y, z: targetPos.z } }),
-  playHitEffect: (unitId) => emit({ type: 'EFFECT_HIT', unitId }),
-  playExplosionAt: (pos, options) =>
-    emit({ type: 'EFFECT_EXPLOSION', pos: { x: pos.x, y: pos.y, z: pos.z }, options }),
 });
 
 registerTurnManagerDeps({

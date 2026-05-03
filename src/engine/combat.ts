@@ -1,10 +1,9 @@
-import * as THREE from 'three';
 import type { PlayerId, UnitTypeId, Unit, StatusId, AdjacencyBonuses, DamageType, AttackType } from '../types';
 import { DAMAGE_TYPES, ATTACK_TYPES, BASE_SQUARES } from '../constants.ts';
 import { UNIT_LIBRARY } from '../data/unitLibrary.ts';
 import { DRONE_STATUS_LIBRARY } from '../data/statusLibrary.ts';
 import { state, nextUnitId } from '../state.ts';
-import { fromSquareKey, toSquareKey, isInsideBoard, gridToWorld, getDistance } from '../utils.ts';
+import { fromSquareKey, toSquareKey, isInsideBoard, getDistance } from '../utils.ts';
 import { syncBoardVisualState, addLog, emit } from '../shared/events.ts';
 import type { ExplosionOptions } from '../three/effects';
 import {
@@ -39,26 +38,29 @@ import { createStatusInstance, refreshAdjacencyBonusesForPlayerCards } from './c
 interface CombatDeps {
   removeUnitShield?: (unit: Unit) => number;
   refreshPlayerMaxEnergy?: (playerId: PlayerId, sync?: boolean) => number;
-  getUnitWorldPosition?: (unitId: string) => THREE.Vector3;
-  playRifleShot?: (attackerId: string, targetPosition: THREE.Vector3) => void;
-  playHitEffect?: (unitId: string) => void;
-  playExplosionAt?: (position: THREE.Vector3, options?: ExplosionOptions) => void;
 }
 
 let removeUnitShield: (unit: Unit) => number = () => 0;
 let refreshPlayerMaxEnergy: (playerId: PlayerId, sync?: boolean) => number = () => 0;
-let getUnitWorldPosition: (unitId: string) => THREE.Vector3 = () => new THREE.Vector3();
-let playRifleShot: (attackerId: string, targetPosition: THREE.Vector3) => void = () => {};
-let playHitEffect: (unitId: string) => void = () => {};
-let playExplosionAt: (position: THREE.Vector3, options?: ExplosionOptions) => void = () => {};
 
 export function registerCombatDeps(deps: CombatDeps): void {
   if (deps.removeUnitShield) removeUnitShield = deps.removeUnitShield;
   if (deps.refreshPlayerMaxEnergy) refreshPlayerMaxEnergy = deps.refreshPlayerMaxEnergy;
-  if (deps.getUnitWorldPosition) getUnitWorldPosition = deps.getUnitWorldPosition;
-  if (deps.playRifleShot) playRifleShot = deps.playRifleShot;
-  if (deps.playHitEffect) playHitEffect = deps.playHitEffect;
-  if (deps.playExplosionAt) playExplosionAt = deps.playExplosionAt;
+}
+
+// ---------------------------------------------------------------------------
+// Effect emitters — pure events, work the same on client and server. The
+// receiving client converts grid → world coords in eventApplier.
+// ---------------------------------------------------------------------------
+
+function emitRifleShot(attackerId: string, gridX: number, gridZ: number, y?: number): void {
+  emit({ type: 'EFFECT_RIFLE_SHOT', attackerId, targetGridX: gridX, targetGridZ: gridZ, targetY: y });
+}
+function emitHit(unitId: string): void {
+  emit({ type: 'EFFECT_HIT', unitId });
+}
+function emitExplosion(gridX: number, gridZ: number, y?: number, options?: ExplosionOptions): void {
+  emit({ type: 'EFFECT_EXPLOSION', gridX, gridZ, y, options });
 }
 
 // ---------------------------------------------------------------------------
@@ -218,10 +220,8 @@ export function applyUnitAttack(attacker: Unit, targetUnit: Unit, options: Attac
     const interception = getCoreMagnetInterception(attacker, targetUnit.x, targetUnit.z);
     if (interception?.type === 'block') {
       const impactSquare = fromSquareKey(interception.impactSquareKey);
-      const impactPos = gridToWorld(impactSquare.x, impactSquare.z);
-      impactPos.y = 0.85;
-      playRifleShot(attacker.id, impactPos);
-      playExplosionAt(impactPos, { particleCount: 10, duration: 0.45, speedMin: 0.8, speedMax: 1.6 });
+      emitRifleShot(attacker.id, impactSquare.x, impactSquare.z, 0.85);
+      emitExplosion(impactSquare.x, impactSquare.z, 0.85, { particleCount: 10, duration: 0.45, speedMin: 0.8, speedMax: 1.6 });
       attacker.hasAttacked = true;
       addLog('Bulwark Core Magnet shield blocked the shot.');
       return;
@@ -232,11 +232,10 @@ export function applyUnitAttack(attacker: Unit, targetUnit: Unit, options: Attac
     }
   }
 
-  const targetPos = getUnitWorldPosition(resolvedTarget.id);
   if (!options.skipAttackVisual) {
-    playRifleShot(attacker.id, targetPos);
+    emitRifleShot(attacker.id, resolvedTarget.x, resolvedTarget.z, 0.85);
   }
-  playHitEffect(resolvedTarget.id);
+  emitHit(resolvedTarget.id);
 
   let damage = options.damageAmount ?? getUnitCurrentAttackDamage(attacker);
   if (
@@ -356,7 +355,7 @@ export function applyUnitAttack(attacker: Unit, targetUnit: Unit, options: Attac
       }
     }
     addLog(`${resolvedTarget.unitName} of Player ${resolvedTarget.owner} was destroyed.`);
-    playExplosionAt(targetPos);
+    emitExplosion(resolvedTarget.x, resolvedTarget.z, 0.5);
     removeUnit(resolvedTarget.id);
   }
 }
@@ -372,10 +371,8 @@ export function applyBaseAttack(attacker: Unit, targetPlayerId: PlayerId, target
     const interception = getCoreMagnetInterception(attacker, targetSquare.x, targetSquare.z);
     if (interception?.type === 'block') {
       const impactSquare = fromSquareKey(interception.impactSquareKey);
-      const impactPos = gridToWorld(impactSquare.x, impactSquare.z);
-      impactPos.y = 0.85;
-      playRifleShot(attacker.id, impactPos);
-      playExplosionAt(impactPos, { particleCount: 10, duration: 0.45, speedMin: 0.8, speedMax: 1.6 });
+      emitRifleShot(attacker.id, impactSquare.x, impactSquare.z, 0.85);
+      emitExplosion(impactSquare.x, impactSquare.z, 0.85, { particleCount: 10, duration: 0.45, speedMin: 0.8, speedMax: 1.6 });
       attacker.hasAttacked = true;
       addLog('Bulwark Core Magnet shield blocked the shot.');
       return;
@@ -405,10 +402,8 @@ export function applyBaseAttack(attacker: Unit, targetPlayerId: PlayerId, target
     newHp: baseOwner.baseHitPoints,
   });
 
-  const basePos = gridToWorld(targetSquare.x, targetSquare.z);
-  basePos.y = 0.3;
-  playRifleShot(attacker.id, basePos);
-  playExplosionAt(basePos, { particleCount: 16, duration: 0.62, speedMin: 1.3, speedMax: 2.6 });
+  emitRifleShot(attacker.id, targetSquare.x, targetSquare.z, 0.3);
+  emitExplosion(targetSquare.x, targetSquare.z, 0.3, { particleCount: 16, duration: 0.62, speedMin: 1.3, speedMax: 2.6 });
 
   addLog(`${attacker.owner} ${attacker.unitName} hit Player ${targetPlayerId} base for ${appliedDamage} (${damageType}).`);
 

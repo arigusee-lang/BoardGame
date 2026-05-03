@@ -1100,37 +1100,75 @@ async function loadWeapon(): Promise<void> {
 
   const inner = gltf.scene;
 
-  // Compute bbox to size the rig sensibly. FPS rigs are typically large in
-  // glb units (e.g. character-scale); we want it to fit visibly in front of
-  // the camera — target longest dim ≈ 0.9m.
+  // The bind-pose bbox of an FPS arms rig is dominated by outstretched
+  // arms (T-pose), not the rifle. Find the actual rifle mesh and size by
+  // its longest axis instead, so the gameplay-pose rig renders at a
+  // predictable on-screen size.
   const tmpRoot = new THREE.Group();
   tmpRoot.add(inner);
   tmpRoot.updateMatrixWorld(true);
   const bbox = meshOnlyBbox(tmpRoot);
   const size = new THREE.Vector3(); bbox.getSize(size);
   const center = new THREE.Vector3(); bbox.getCenter(center);
-  const maxDim = Math.max(size.x, size.y, size.z) || 1;
-  const targetSize = 0.9;
-  const scale = targetSize / maxDim;
 
-  // Hierarchy:
-  //   wrap (camera-relative pos + scale) ← orient (default rig orientation)
-  //     ← centerNode (translation to put bbox center at origin)
-  //       ← inner
-  // This way centering is applied BEFORE rotation, so the rig stays put when
-  // we adjust the orient angle.
+  // Find the rifle mesh. The rig likely has the Skinned arms+rifle as one
+  // SkinnedMesh and individual props as separate meshes — we want the
+  // weapon, which by name matching OR by being the LARGEST non-arms mesh
+  // is a good heuristic. Also dump every mesh to the console so we can see.
+  let rifleMaxDim = 0;
+  const meshLog: string[] = [];
+  inner.traverse(c => {
+    const m = c as THREE.Mesh;
+    if (!m.isMesh || !m.geometry) return;
+    if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+    const b = m.geometry.boundingBox;
+    if (!b) return;
+    const s = new THREE.Vector3(); b.getSize(s);
+    const matName = (m.material as { name?: string } | null)?.name ?? '';
+    const combinedName = `${m.name} ${matName}`.toLowerCase();
+    const meshMax = Math.max(s.x, s.y, s.z);
+    meshLog.push(`    "${m.name}" mat="${matName}" size=${s.x.toFixed(2)}x${s.y.toFixed(2)}x${s.z.toFixed(2)}`);
+    // Match weapon parts (rifle/gun/AKM names or material naming).
+    const isWeapon = /rifle|gun|weapon|akm|m4|ak|ar15|main_|vector|pmag|silencer|scope|barrel/.test(combinedName);
+    // Skip arm/glove/skin meshes
+    const isArm = /arm|hand|glove|skin|finger/.test(combinedName);
+    if (isArm) return;
+    if (isWeapon) {
+      rifleMaxDim = Math.max(rifleMaxDim, meshMax);
+    }
+  });
+  // If still 0, fall back to the largest non-arm mesh
+  if (rifleMaxDim === 0) {
+    inner.traverse(c => {
+      const m = c as THREE.Mesh;
+      if (!m.isMesh || !m.geometry) return;
+      const matName = (m.material as { name?: string } | null)?.name ?? '';
+      if (/arm|hand|glove|skin|finger/i.test(`${m.name} ${matName}`)) return;
+      if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+      const b = m.geometry.boundingBox;
+      if (!b) return;
+      const s = new THREE.Vector3(); b.getSize(s);
+      rifleMaxDim = Math.max(rifleMaxDim, s.x, s.y, s.z);
+    });
+  }
+
+  const targetSize = 1.0;
+  const scale = rifleMaxDim > 0
+    ? targetSize / rifleMaxDim
+    : targetSize / (Math.max(size.x, size.y, size.z) || 1);
+
+  // No bbox-centering on rigged FPS arms — the bbox is computed in T-pose
+  // (arms wide), so its centre isn't where the rifle ends up after the idle
+  // animation deforms the bones. Just attach inner directly and let the
+  // skeleton's natural origin (wrist/grip) act as the wrap pivot.
   const wrap = new THREE.Group();
-  const orient = new THREE.Group();
-  const centerNode = new THREE.Group();
-  centerNode.position.set(-center.x, -center.y, -center.z);
-  centerNode.add(inner);
-  orient.add(centerNode);
-  wrap.add(orient);
+  wrap.add(inner);
 
   wrap.scale.setScalar(scale);
-  // AKM rig from user77 ships authored facing -Z, no rotation needed.
-  wrap.rotation.set(0, 0, 0);
-  wrap.position.set(0.0, -0.15, -0.45);
+  // Cransh pack: rifle barrel runs along +Z in glb; camera forward is -Z, so
+  // flip 180° around Y. Bring the rig down and slightly right.
+  wrap.rotation.set(0, Math.PI, 0);
+  wrap.position.set(0.10, -0.40, -0.20);
   // Disable frustum culling on the camera-attached rig so the local bbox
   // doesn't make it flicker out at the near plane during head-bob.
   wrap.traverse(c => { c.frustumCulled = false; });
@@ -1140,14 +1178,17 @@ async function loadWeapon(): Promise<void> {
   const clips = gltf.animations;
   const mixer = clips.length > 0 ? new THREE.AnimationMixer(inner) : null;
 
-  // Pick clips by name. The Cransh pack uses "Arms_FPS_Anim_<Action>" naming.
-  // Skip "OneShot" deliberately — user requested using the looping "Shoot" instead.
+  // Pick clips by name. The Cransh pack uses "Arms_FPS_Anim_<Action>" naming
+  // — names like "Arms_FPS_Anim_Idle" lowercase are "arms_fps_anim_idle", so
+  // \bidle\b doesn't match (the underscore is a word char, no boundary).
+  // Just substring-match. Exclude "OneShot" from the fire pick — user wants
+  // the looping "Shoot" for sustained fire.
   const findClip = (re: RegExp, exclude?: RegExp) =>
     clips.find(c => re.test(c.name.toLowerCase()) && !(exclude && exclude.test(c.name.toLowerCase()))) ?? null;
 
   const drawClip   = findClip(/draw/);
-  const idleClip   = findClip(/\b(idle|rest)\b/) ?? (clips.length === 1 ? clips[0] : null);
-  const runClip    = findClip(/\brun\b|\bsprint\b/);
+  const idleClip   = findClip(/idle|rest/) ?? (clips.length === 1 ? clips[0] : null);
+  const runClip    = findClip(/run|sprint/);
   const fireClip   = findClip(/shoot|fire/, /oneshot|aim/);
   const reloadClip = findClip(/reload/);
 
@@ -1171,9 +1212,13 @@ async function loadWeapon(): Promise<void> {
   // game-logic ticks stay in sync.
   if (fireClip && fireClip.duration > 0.02) FIRE_COOLDOWN = fireClip.duration;
 
-  console.log(`[weapon] loaded: clips=[${clips.map(c => `${c.name}/${c.duration.toFixed(2)}s`).join(', ')}]
+  console.log(`[weapon] loaded:
+  bind-pose bbox: ${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ${size.z.toFixed(2)} (glb units)
+  rifle mesh max dim: ${rifleMaxDim.toFixed(2)} | applied scale: ${scale.toFixed(4)}
+  meshes:
+${meshLog.join('\n')}
   draw="${drawClip?.name}" idle="${idleClip?.name}" run="${runClip?.name}" fire="${fireClip?.name}" reload="${reloadClip?.name}"
-  FIRE_COOLDOWN=${FIRE_COOLDOWN.toFixed(3)}s (= shoot clip duration)`);
+  FIRE_COOLDOWN=${FIRE_COOLDOWN.toFixed(3)}s`);
 
   weapon = {
     group: wrap, mixer,

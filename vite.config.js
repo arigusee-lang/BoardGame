@@ -20,6 +20,22 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     host: true,
-    open: true
+    open: true,
+    watch: {
+      // HMR ignores. Add patterns of files that other tooling edits but you
+      // don't want triggering a sandbox/main-app full-page reload while you
+      // play. Set to `false` to keep watching everything.
+      ignored: [
+        '**/.git/**',
+        '**/node_modules/**',
+        '**/dist/**',
+        '**/memory/**',
+        // Comment out the line below if you're actively iterating on src/
+        // and need HMR for it. With it on, edits to the main game source
+        // won't reload the sandbox page (useful when another agent / test
+        // run is touching src/ files in the background).
+        // '**/src/**',
+      ],
+    },
   }
 });

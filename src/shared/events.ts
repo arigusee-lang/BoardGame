@@ -33,10 +33,13 @@ export type GameEvent =
   | { type: 'BOARD_SYNC' }
   | { type: 'UI_REFRESH' }
 
-  // Visual / animation effect requests.
-  | { type: 'EFFECT_RIFLE_SHOT'; attackerId: string; targetPos: { x: number; y: number; z: number } }
+  // Visual / animation effect requests. Positions are encoded by grid
+  // coordinates (gridX/gridZ) so the server — which has no Three.js — can
+  // emit the same events for receiving clients to play. The optional `y`
+  // is a world-space elevation hint (rifle muzzle, mid-air interception).
+  | { type: 'EFFECT_RIFLE_SHOT'; attackerId: string; targetGridX: number; targetGridZ: number; targetY?: number }
   | { type: 'EFFECT_HIT'; unitId: string }
-  | { type: 'EFFECT_EXPLOSION'; pos: { x: number; y: number; z: number }; options?: ExplosionEffectOptions }
+  | { type: 'EFFECT_EXPLOSION'; gridX: number; gridZ: number; y?: number; options?: ExplosionEffectOptions }
   | { type: 'EFFECT_REPAIR_CASTER'; casterId: string }
   | { type: 'EFFECT_REPAIR_TARGET'; targetId: string }
   | { type: 'EFFECT_SUPPLY_HARVEST_COINS'; unitId: string }

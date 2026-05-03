@@ -439,23 +439,3 @@ export interface BuildingVisual {
   statusIcons?: THREE.Sprite[];
 }
 
-// ---------------------------------------------------------------------------
-// Event Bus (replaces registerDeps pattern)
-// ---------------------------------------------------------------------------
-
-export interface GameEvents {
-  renderUI: () => void;
-  syncBoardVisualState: () => void;
-  playRifleShot: (attackerId: string, targetPosition: THREE.Vector3) => void;
-  playHitEffect: (unitId: string) => void;
-  playExplosionAt: (position: THREE.Vector3, options?: { color?: number; count?: number }) => void;
-  playRepairCasterAnimation: (casterId: string) => void;
-  playRepairTargetAnimation: (targetId: string) => void;
-  playSupplyHarvestCoins: (unitId: string) => void;
-  flashSupplyHarvested: () => void;
-  playArtilleryShellShot: (attackerId: string, landingPos: THREE.Vector3) => void;
-  playArtilleryGaussBeam: (attackerId: string, fromWorld: THREE.Vector3, toWorld: THREE.Vector3) => void;
-  playTeleportBlinkAt: (worldPos: THREE.Vector3, owner: PlayerId) => void;
-  playSystemShockImpact: (headPosition: THREE.Vector3, targetId: string) => void;
-  playSystemShockSmoke: (targetId: string) => void;
-}

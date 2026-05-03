@@ -40,25 +40,10 @@ function getPlayerMaxEnergy(player: { maxEnergy?: number } | null | undefined): 
   return player?.maxEnergy ?? MAX_ENERGY;
 }
 
-// Three.js position dummy — engine doesn't really need real coordinates here,
-// only client-side animations do. The server emits the same EFFECT events that
-// the client emits; the client side of those wires already converts to Vector3
-// in eventApplier.ts.
-function dummyWorldPosition(): { x: number; y: number; z: number } {
-  return { x: 0, y: 0, z: 0 };
-}
-
 export function registerServerEngineDeps(): void {
   registerCombatDeps({
     removeUnitShield,
     refreshPlayerMaxEnergy,
-    // Cast through unknown — the engine signature wants a THREE.Vector3 but on
-    // the server it never reads any field except .x/.y/.z. The struct above is
-    // structurally compatible.
-    getUnitWorldPosition: () => dummyWorldPosition() as unknown as import('three').Vector3,
-    playRifleShot: () => {},
-    playHitEffect: () => {},
-    playExplosionAt: () => {},
   });
 
   registerTurnManagerDeps({

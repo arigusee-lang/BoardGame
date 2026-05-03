@@ -2,9 +2,10 @@
  * Visual effect events — "play this animation, decay this particle system."
  * Stateless from the game-state perspective, only the Three.js scene changes.
  *
- * These will eventually be subsumed by `UNIT_ATTACKED` / `UNIT_HEALED` etc.
- * carrying weaponKind / amount, with the applier choosing the right effect.
- * For now they stay as their own primitives.
+ * Positions on the wire are grid coordinates; the handler converts them
+ * to world space (Three.js Vector3) on the client. The server emits the
+ * exact same events for receiving clients — that's how the non-acting
+ * client sees combat explosions / muzzle flashes too.
  */
 
 import * as THREE from 'three';
@@ -18,12 +19,13 @@ import {
   playSupplyHarvestCoins,
   flashSupplyHarvested,
 } from '../three/effects.ts';
-
-const v3 = (p: { x: number; y: number; z: number }) => new THREE.Vector3(p.x, p.y, p.z);
+import { gridToWorld } from '../utils.ts';
 
 export const effectEventHandlers = {
   EFFECT_RIFLE_SHOT: ((e) => {
-    playRifleShot(e.attackerId, v3(e.targetPos));
+    const w = gridToWorld(e.targetGridX, e.targetGridZ);
+    const target = new THREE.Vector3(w.x, e.targetY ?? 0.85, w.z);
+    playRifleShot(e.attackerId, target);
   }) satisfies EventHandler<'EFFECT_RIFLE_SHOT'>,
 
   EFFECT_HIT: ((e) => {
@@ -31,7 +33,9 @@ export const effectEventHandlers = {
   }) satisfies EventHandler<'EFFECT_HIT'>,
 
   EFFECT_EXPLOSION: ((e) => {
-    playExplosionAt(v3(e.pos), e.options);
+    const w = gridToWorld(e.gridX, e.gridZ);
+    const pos = new THREE.Vector3(w.x, e.y ?? 0.5, w.z);
+    playExplosionAt(pos, e.options);
   }) satisfies EventHandler<'EFFECT_EXPLOSION'>,
 
   EFFECT_REPAIR_CASTER: ((e) => {
