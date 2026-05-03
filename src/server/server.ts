@@ -333,16 +333,35 @@ const server = Bun.serve<WsData, never>({
 
 // Heartbeat strategy
 // ------------------------------------------------------------------
-// We rely on the *client* to send `{ type: 'ping' }` periodically (the
-// browser WebSocket API doesn't expose ping frames, so this is the only
-// portable approach). The server replies with `{ type: 'pong' }` and
-// uses any inbound message to refresh `ws.data.isAlive`. This keeps the
-// socket warm under Cloud Run's idle timeout.
+// Browser WebSocket API can't send ping frames, so the *client* drives
+// heartbeat: it sends `{ type: 'ping' }` every 30s and we respond with
+// `{ type: 'pong' }`. Any inbound message refreshes `ws.data.isAlive`.
 //
-// We don't actively scan for stale sockets here — Bun's underlying TCP
-// keepalive plus the disconnect grace period in RoomManager.cleanup()
-// is sufficient for a pet project.
-void HEARTBEAT_INTERVAL_MS;
+// Without an active scan, a browser that died without a close frame
+// (OS crash, kill -9) keeps its socket "open" on the server until TCP
+// keepalive trips — that's hours locally and capped at Cloud Run's
+// --timeout (1h here). Combined with the 5-min disconnect grace this
+// could leave a zombie room visible for ~65 minutes.
+//
+// The scan below closes any socket that hasn't sent us anything in
+// HEARTBEAT_INTERVAL_MS — at which point the regular `close` handler
+// runs, the player goes into grace, and 5 minutes later the room
+// evaporates. Normal close-frames still fire instantly; this only
+// catches dead clients.
+function heartbeatScan(): void {
+  for (const room of roomManager.allRooms()) {
+    for (const player of room.players.values()) {
+      const ws = player.ws;
+      if (!ws || ws.readyState !== WebSocket.OPEN) continue;
+      if (ws.data.isAlive === false) {
+        try { ws.close(4001, 'heartbeat_timeout'); } catch { /* ignore */ }
+        continue;
+      }
+      ws.data.isAlive = false;
+    }
+  }
+}
+setInterval(heartbeatScan, HEARTBEAT_INTERVAL_MS);
 
 console.log(`[server] listening on http://localhost:${PORT} (ws path: /ws)`);
 console.log(`[server] healthz: http://localhost:${PORT}/healthz`);

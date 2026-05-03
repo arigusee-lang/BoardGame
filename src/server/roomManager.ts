@@ -67,6 +67,11 @@ export class RoomManager {
     return this.rooms.get(roomId);
   }
 
+  /** Iterate every active room — used by the heartbeat scan. */
+  allRooms(): IterableIterator<Room> {
+    return this.rooms.values();
+  }
+
   // -------------------------------------------------------------------------
   // Lifecycle
   // -------------------------------------------------------------------------
