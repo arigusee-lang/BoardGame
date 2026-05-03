@@ -500,6 +500,39 @@ export function executeHarvestDataAbsorb(sourceIndex: number, targetIndex: numbe
 }
 
 // ---------------------------------------------------------------------------
+// Process Echo: store a perk card from hand into slot X (carry-over)
+// ---------------------------------------------------------------------------
+
+export function executeProcessEchoStore(handIndex: number, slot: ProcessEchoSlot): void {
+  const currentPlayer = getCurrentPlayer();
+  const card = currentPlayer.hand[handIndex];
+  if (!card) {
+    addLog('Select a storable Perk card first.');
+    return;
+  }
+  const storableIds: string[] = [
+    CARD_LIBRARY.SYSTEM_SHOCK.id,
+    CARD_LIBRARY.SHIELDING.id,
+    CARD_LIBRARY.SHIMMERING_CLOAK.id,
+  ];
+  if (!storableIds.includes(card.cardId)) {
+    addLog('That card cannot be stored in Process Echo.');
+    return;
+  }
+  const echo = currentPlayer.processEcho;
+  if (!echo) return;
+  if (slot === 'X' && echo.X) {
+    currentPlayer.discard.push(echo.X);
+    addLog(`Player ${currentPlayer.id} replaced the card in Process Echo X. Old card moved to discard.`);
+  }
+  echo[slot] = card;
+  currentPlayer.hand.splice(handIndex, 1);
+  addLog(`Player ${currentPlayer.id} stored ${CARD_LIBRARY[card.cardId].cardName} in Process Echo ${slot}.`);
+  clearSelection();
+  renderUI();
+}
+
+// ---------------------------------------------------------------------------
 // Late-bound imports (functions still in main.js or future modules)
 // These are set via registerAbilityDeps() called from main.js during init.
 // ---------------------------------------------------------------------------

@@ -1737,15 +1737,11 @@ export function renderProcessEchoPanels(currentPlayer: Player): void {
             logHint('Select a storable Perk card first.');
             return;
           }
-          if (echo.X) {
-            currentPlayer.discard.push(echo.X);
-            logHint(`Player ${currentPlayer.id} replaced the card in Process Echo X. Old card moved to discard.`);
-          }
-          echo.X = selectedCard;
-          currentPlayer.hand.splice(state.selectedCardHandIndex, 1);
-          logHint(`Player ${currentPlayer.id} stored ${CARD_LIBRARY[selectedCard.cardId].cardName} in Process Echo X.`);
-          clearSelection();
-          renderUI();
+          dispatch({
+            type: 'PROCESS_ECHO_STORE',
+            slot: 'X',
+            handIndex: state.selectedCardHandIndex,
+          });
           return;
         }
 

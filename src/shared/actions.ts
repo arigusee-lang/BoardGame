@@ -44,7 +44,6 @@ export type Action =
   | ({ type: 'PLAY_SYSTEM_SHOCK'; casterUnitId: string; targetUnitId: string } & CardSource)
   | ({ type: 'PLAY_SHIELDING'; targetUnitId: string } & CardSource)
   | ({ type: 'PLAY_SHIMMERING_CLOAK'; squareKeys: string[] } & CardSource)
-  | { type: 'PLAY_HARVEST_DATA_STORE'; handIndex: number }
   | { type: 'PLAY_HARVEST_DATA_ABSORB'; sourceHandIndex: number; targetHandIndex: number }
 
   // --- Unit-activated abilities ---

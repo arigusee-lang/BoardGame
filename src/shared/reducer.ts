@@ -39,6 +39,7 @@ import {
   executeHarvestDataAbsorb,
   executeGhostbladeTeleport,
   executeShielding,
+  executeProcessEchoStore,
 } from '../engine/abilities.ts';
 import {
   executeArtilleryBallisticAgainstUnit,
@@ -227,8 +228,12 @@ export function applyAction(action: Action): ReduceResult | ReduceError {
       return { ok: true, events: [] };
     }
 
+    case 'PROCESS_ECHO_STORE': {
+      executeProcessEchoStore(action.handIndex, action.slot);
+      return { ok: true, events: [] };
+    }
+
     case 'PLAY_SYSTEM_SHOCK':
-    case 'PLAY_HARVEST_DATA_STORE':
     case 'SPECIALIST_EMP':
     case 'PLAY_BUILD_CARD':
     case 'CONFIRM_BUILDING_PLACEMENT':
