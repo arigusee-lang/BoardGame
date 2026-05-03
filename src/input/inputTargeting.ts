@@ -36,6 +36,7 @@ import { CARD_LIBRARY, BUILD_CARD_LIBRARY } from '../data/cardLibrary.ts';
 import { DRONE_STATUS_LIBRARY, BUILDING_PERK_DRAFT_POOL } from '../data/statusLibrary.ts';
 import { renderUI, syncBoardVisualState } from '../shared/events.ts';
 import { logHint } from '../ui/log.ts';
+import { dispatch } from '../actionDispatcher.ts';
 
 import { applyUnitAttack, applyBaseAttack, removeUnit, destroyBase } from '../engine/combat.ts';
 import {
@@ -56,20 +57,11 @@ import {
   getGaussLineSquareKeysFromTarget,
   hasBallisticStatus,
   getMinDistanceToAreaFromUnit,
-  executeArtilleryBallisticAgainstUnit,
-  executeArtilleryBallisticAgainstBase,
-  executeArtilleryGauss,
-  executeArtilleryArea
 } from '../engine/artillery.ts';
 import { applyProcessEchoPlayResult } from '../engine/turnManager.ts';
 import {
-  applyRepairAbility,
   getSystemShockTargetableEnemyUnits,
   applyShieldingEffectToUnit,
-  applyShimmeringCloakSelection,
-  activateCoreMagnet,
-  activateBulwarkCoreMagnet,
-  executeGhostbladeTeleport
 } from '../engine/abilities.ts';
 import {
   createBuilding,
@@ -155,7 +147,7 @@ export function handleRepairTargetClick(hit: HitObject): void {
     return;
   }
 
-  applyRepairAbility(caster, target);
+  dispatch({ type: 'ACTIVATE_REPAIR', casterUnitId: caster.id, targetUnitId: target.id });
 }
 
 // ---------------------------------------------------------------------------
@@ -367,7 +359,23 @@ export function handleShimmeringSquareClick(hit: HitObject): void {
     renderUI();
     return;
   }
-  applyShimmeringCloakSelection(level, state.pendingShimmeringSquares);
+  // CardSource discriminator is required by the action shape but read by the
+  // engine via state.mode/pendingShimmeringSourceSlot — pass a stub here.
+  if (state.mode === 'shimmering_targeting_instant') {
+    dispatch({
+      type: 'PLAY_SHIMMERING_CLOAK',
+      squareKeys: state.pendingShimmeringSquares,
+      source: 'hand',
+      handIndex: state.selectedCardHandIndex ?? 0,
+    });
+  } else {
+    dispatch({
+      type: 'PLAY_SHIMMERING_CLOAK',
+      squareKeys: state.pendingShimmeringSquares,
+      source: 'echo',
+      slot: (state.pendingShimmeringSourceSlot as '1' | '2' | '3' | null) ?? '1',
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -422,8 +430,7 @@ export function handleGhostbladeTeleportTargetClick(hit: HitObject): void {
   playTeleportBlinkAt(startPos, caster.owner);
   playTeleportBlinkAt(targetPos, caster.owner);
 
-  // Game-state mutation lives in the engine.
-  executeGhostbladeTeleport(caster, squareKey);
+  dispatch({ type: 'GHOSTBLADE_TELEPORT', casterUnitId: caster.id, targetSquareKey: squareKey });
 
   state.mode = 'unit_selected';
   state.ghostbladeTeleportCasterId = null;
@@ -475,8 +482,12 @@ export function handleArtilleryAttackTargetClick(hit: HitObject): void {
       }
       // Visual cue (client-only)
       playArtilleryShellShot(artillery.id, gridToWorld(targetUnit.x, targetUnit.z));
-      // Game-state mutation lives in the engine
-      executeArtilleryBallisticAgainstUnit(artillery, targetUnit);
+      dispatch({
+        type: 'ARTILLERY_FIRE',
+        unitId: artillery.id,
+        mode: 'ballistic',
+        targetUnitId: targetUnit.id,
+      });
       state.mode = 'unit_selected';
       state.hoverSquareKey = null;
       state.ghostbladeTeleportCasterId = null;
@@ -501,7 +512,12 @@ export function handleArtilleryAttackTargetClick(hit: HitObject): void {
       return;
     }
     playArtilleryShellShot(artillery.id, gridToWorld(sq.x, sq.z));
-    executeArtilleryBallisticAgainstBase(artillery, targetBaseOwner as PlayerId, targetSquareKey);
+    dispatch({
+      type: 'ARTILLERY_FIRE',
+      unitId: artillery.id,
+      mode: 'ballistic',
+      targetSquareKey,
+    });
     state.mode = 'unit_selected';
     state.hoverSquareKey = null;
     state.ghostbladeTeleportCasterId = null;
@@ -545,8 +561,12 @@ export function handleArtilleryAttackTargetClick(hit: HitObject): void {
         }
       }
     }
-    // Engine handles damage + flag mutations + winner detection.
-    executeArtilleryGauss(artillery, lineKeys);
+    dispatch({
+      type: 'ARTILLERY_FIRE',
+      unitId: artillery.id,
+      mode: 'gauss',
+      targetSquareKey: hit.userData.squareKey!,
+    });
     state.mode = 'unit_selected';
     state.hoverSquareKey = null;
     state.ghostbladeTeleportCasterId = null;
@@ -597,8 +617,12 @@ export function handleArtilleryAttackTargetClick(hit: HitObject): void {
     speedMin: 1.2,
     speedMax: 2.9,
   });
-  // Engine handles damage + flag mutations + winner detection.
-  executeArtilleryArea(artillery, areaKeys);
+  dispatch({
+    type: 'ARTILLERY_FIRE',
+    unitId: artillery.id,
+    mode: 'standard',
+    targetSquareKey: hit.userData.squareKey!,
+  });
   state.mode = 'unit_selected';
   state.hoverSquareKey = null;
   state.ghostbladeTeleportCasterId = null;
@@ -715,7 +739,7 @@ export function handleCoreMagnetBulwarkTargetClick(hit: HitObject): void {
     return;
   }
   if (hasBeaconCoreMagnet(unit) && unit.coreMagnetTurnsLeft > 0) {
-    activateCoreMagnet(unit);
+    dispatch({ type: 'ACTIVATE_CORE_MAGNET', unitId: unit.id });
     return;
   }
   const validTargets = new Set(getBulwarkAdjacentSquareKeys(unit));
@@ -723,7 +747,7 @@ export function handleCoreMagnetBulwarkTargetClick(hit: HitObject): void {
     logHint('Choose one of the 4 adjacent highlighted squares.');
     return;
   }
-  activateBulwarkCoreMagnet(unit, targetSquareKey);
+  dispatch({ type: 'ACTIVATE_BULWARK_CORE_MAGNET', unitId: unit.id, centerSquareKey: targetSquareKey });
 }
 
 // ---------------------------------------------------------------------------

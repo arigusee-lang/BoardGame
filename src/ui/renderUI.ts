@@ -72,13 +72,7 @@ import {
   confirmGearStationBuildPlacement,
   confirmAssemblyLineBuildPlacement,
 } from '../engine/buildings.ts';
-import {
-  activateTacticalDash,
-  activateCoreMagnet,
-  activateRepairTargeting,
-  activateArtillerySetUp,
-  executeHarvestDataAbsorb,
-} from '../engine/abilities.ts';
+import { activateRepairTargeting } from '../engine/abilities.ts';
 import {
   getArtilleryAreaSquareKeys,
   getGaussLineSquareKeysFromTarget,
@@ -86,6 +80,7 @@ import {
 } from '../engine/artillery.ts';
 import { syncBoardVisualState } from '../shared/events.ts';
 import { getPlayerName, getMyPlayerId, isMyTurn } from '../playerNames.ts';
+import { dispatch } from '../actionDispatcher.ts';
 
 export function getPlayerMaxEnergy(player: Player): number {
   return player?.maxEnergy ?? MAX_ENERGY;
@@ -1001,7 +996,11 @@ export function renderUI(): void {
           renderUI();
           return;
         }
-        executeHarvestDataAbsorb(state.selectedCardHandIndex!, handIndex);
+        dispatch({
+          type: 'PLAY_HARVEST_DATA_ABSORB',
+          sourceHandIndex: state.selectedCardHandIndex!,
+          targetHandIndex: handIndex,
+        });
         return;
       }
 
@@ -1498,7 +1497,7 @@ export function renderUI(): void {
       if (!unit || unit.owner !== state.currentPlayerId) {
         return;
       }
-      activateTacticalDash(unit);
+      dispatch({ type: 'ACTIVATE_TACTICAL_DASH', unitId: unit.id });
     });
   }
 
@@ -1556,7 +1555,7 @@ export function renderUI(): void {
         return;
       }
       if (beacon && unit.coreMagnetTurnsLeft > 0) {
-        activateCoreMagnet(unit);
+        dispatch({ type: 'ACTIVATE_CORE_MAGNET', unitId: unit.id });
         return;
       }
       state.coreMagnetPreviewUnitId = unit.id;
@@ -1583,7 +1582,7 @@ export function renderUI(): void {
         logHint('Bulwark Core Magnet is activated by choosing an adjacent square.');
         return;
       }
-      activateCoreMagnet(unit);
+      dispatch({ type: 'ACTIVATE_CORE_MAGNET', unitId: unit.id });
     });
   }
 
@@ -1642,7 +1641,7 @@ export function renderUI(): void {
       if (!unit || unit.owner !== state.currentPlayerId || unit.unitTypeId !== 'ARTILLERY_UNIT') {
         return;
       }
-      activateArtillerySetUp(unit);
+      dispatch({ type: 'ACTIVATE_ARTILLERY_SETUP', unitId: unit.id });
     });
   }
 

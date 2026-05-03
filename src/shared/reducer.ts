@@ -17,6 +17,7 @@
 
 import type { Action } from './actions.ts';
 import type { GameEvent } from './events.ts';
+import type { PlayerId } from '../types.ts';
 import { state } from '../state.ts';
 import { fromSquareKey } from '../utils.ts';
 
@@ -28,6 +29,24 @@ import {
   summonUnit,
   executeUnitMove,
 } from '../engine/combat.ts';
+import {
+  activateTacticalDash,
+  activateCoreMagnet,
+  activateBulwarkCoreMagnet,
+  activateArtillerySetUp,
+  applyRepairAbility,
+  applyShimmeringCloakSelection,
+  executeHarvestDataAbsorb,
+  executeGhostbladeTeleport,
+} from '../engine/abilities.ts';
+import {
+  executeArtilleryBallisticAgainstUnit,
+  executeArtilleryBallisticAgainstBase,
+  executeArtilleryGauss,
+  executeArtilleryArea,
+  getGaussLineSquareKeysFromTarget,
+  getArtilleryAreaSquareKeys,
+} from '../engine/artillery.ts';
 import { CARD_LIBRARY } from '../data/cardLibrary.ts';
 import { setEnergy } from '../engine/playerResources.ts';
 import { getCardEnergyCost } from '../engine/cards.ts';
@@ -111,19 +130,95 @@ export function applyAction(action: Action): ReduceResult | ReduceError {
       return { ok: true, events: [] };
     }
 
+    case 'ACTIVATE_TACTICAL_DASH': {
+      const unit = state.units.find((u) => u.id === action.unitId);
+      if (!unit) return { ok: false, error: 'unit_not_found', events: [] };
+      activateTacticalDash(unit);
+      return { ok: true, events: [] };
+    }
+
+    case 'ACTIVATE_CORE_MAGNET': {
+      const unit = state.units.find((u) => u.id === action.unitId);
+      if (!unit) return { ok: false, error: 'unit_not_found', events: [] };
+      activateCoreMagnet(unit);
+      return { ok: true, events: [] };
+    }
+
+    case 'ACTIVATE_BULWARK_CORE_MAGNET': {
+      const unit = state.units.find((u) => u.id === action.unitId);
+      if (!unit) return { ok: false, error: 'unit_not_found', events: [] };
+      activateBulwarkCoreMagnet(unit, action.centerSquareKey);
+      return { ok: true, events: [] };
+    }
+
+    case 'ACTIVATE_ARTILLERY_SETUP': {
+      const unit = state.units.find((u) => u.id === action.unitId);
+      if (!unit) return { ok: false, error: 'unit_not_found', events: [] };
+      activateArtillerySetUp(unit);
+      return { ok: true, events: [] };
+    }
+
+    case 'ACTIVATE_REPAIR': {
+      const caster = state.units.find((u) => u.id === action.casterUnitId);
+      const target = state.units.find((u) => u.id === action.targetUnitId);
+      if (!caster || !target) return { ok: false, error: 'unit_not_found', events: [] };
+      applyRepairAbility(caster, target);
+      return { ok: true, events: [] };
+    }
+
+    case 'GHOSTBLADE_TELEPORT': {
+      const caster = state.units.find((u) => u.id === action.casterUnitId);
+      if (!caster) return { ok: false, error: 'unit_not_found', events: [] };
+      executeGhostbladeTeleport(caster, action.targetSquareKey);
+      return { ok: true, events: [] };
+    }
+
+    case 'ARTILLERY_FIRE': {
+      const artillery = state.units.find((u) => u.id === action.unitId);
+      if (!artillery) return { ok: false, error: 'unit_not_found', events: [] };
+      if (action.mode === 'ballistic') {
+        if (action.targetUnitId) {
+          const target = state.units.find((u) => u.id === action.targetUnitId);
+          if (!target) return { ok: false, error: 'unit_not_found', events: [] };
+          executeArtilleryBallisticAgainstUnit(artillery, target);
+        } else if (action.targetSquareKey) {
+          const owner: PlayerId = artillery.owner === 'A' ? 'B' : 'A';
+          executeArtilleryBallisticAgainstBase(artillery, owner, action.targetSquareKey);
+        } else {
+          return { ok: false, error: 'ballistic_target_missing', events: [] };
+        }
+      } else if (action.mode === 'gauss') {
+        if (!action.targetSquareKey) return { ok: false, error: 'gauss_target_missing', events: [] };
+        const lineKeys = getGaussLineSquareKeysFromTarget(artillery, action.targetSquareKey);
+        if (lineKeys.length === 0) return { ok: false, error: 'gauss_invalid_line', events: [] };
+        executeArtilleryGauss(artillery, lineKeys);
+      } else if (action.mode === 'standard') {
+        if (!action.targetSquareKey) return { ok: false, error: 'area_target_missing', events: [] };
+        const areaKeys = getArtilleryAreaSquareKeys(action.targetSquareKey);
+        executeArtilleryArea(artillery, areaKeys);
+      }
+      return { ok: true, events: [] };
+    }
+
+    case 'PLAY_SHIMMERING_CLOAK': {
+      // Level is determined by the source (hand=instant=1, echo carries pendingShimmeringLevel).
+      // The engine fn reads source via state.mode; the action carries squareKeys explicitly.
+      const level = state.mode === 'shimmering_targeting_instant'
+        ? 1
+        : Math.max(1, Math.min(3, state.pendingShimmeringLevel ?? 1));
+      applyShimmeringCloakSelection(level, action.squareKeys);
+      return { ok: true, events: [] };
+    }
+
+    case 'PLAY_HARVEST_DATA_ABSORB': {
+      executeHarvestDataAbsorb(action.sourceHandIndex, action.targetHandIndex);
+      return { ok: true, events: [] };
+    }
+
     case 'PLAY_SYSTEM_SHOCK':
     case 'PLAY_SHIELDING':
-    case 'PLAY_SHIMMERING_CLOAK':
     case 'PLAY_HARVEST_DATA_STORE':
-    case 'PLAY_HARVEST_DATA_ABSORB':
-    case 'ACTIVATE_TACTICAL_DASH':
-    case 'ACTIVATE_REPAIR':
-    case 'ACTIVATE_CORE_MAGNET':
-    case 'ACTIVATE_BULWARK_CORE_MAGNET':
-    case 'ACTIVATE_ARTILLERY_SETUP':
-    case 'ARTILLERY_FIRE':
     case 'SPECIALIST_EMP':
-    case 'GHOSTBLADE_TELEPORT':
     case 'PLAY_BUILD_CARD':
     case 'CONFIRM_BUILDING_PLACEMENT':
     case 'CANCEL_BUILDING_PLACEMENT':
