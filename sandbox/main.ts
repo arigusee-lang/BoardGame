@@ -152,9 +152,15 @@ async function loadAsteroid(): Promise<void> {
   wrap.scale.setScalar(scale);
   scene.add(wrap);
 
-  // Bounding radius post-scale: max distance from center to any vertex.
+  // CRITICAL: force-update the entire wrap → root → mesh chain so that
+  // matrixWorld on every descendant reflects the new scale. Three.js does
+  // not propagate this automatically until the next render(). Without this,
+  // raycasts run in glb-local coordinates (asteroid appears tiny — props
+  // & monsters spawn near origin, INSIDE the visual surface).
+  wrap.updateMatrixWorld(true);
+
+  // Bounding radius in world units — m.matrixWorld now bakes in the scale.
   let maxRsq = 0;
-  root.updateMatrixWorld(true);
   root.traverse(c => {
     const m = c as THREE.Mesh;
     if (m.isMesh && m.geometry) {
@@ -167,7 +173,7 @@ async function loadAsteroid(): Promise<void> {
       }
     }
   });
-  asteroidBoundingRadius = Math.sqrt(maxRsq) * scale;
+  asteroidBoundingRadius = Math.sqrt(maxRsq);
   asteroidMesh = wrap;
 
   console.log(`[asteroid] loaded: bbox=${size.x.toFixed(1)}x${size.y.toFixed(1)}x${size.z.toFixed(1)}, scale=${scale.toFixed(3)}, boundingRadius=${asteroidBoundingRadius.toFixed(2)}`);
@@ -458,23 +464,66 @@ function updateFragments(dt: number): void {
   }
 }
 
+// --- damage flash (cosmetic only — no actual HP) --------------------------
+
+// Red radial vignette that pulses when a monster attacks the player. The
+// container is fixed full-screen, transparent in the centre, red at the
+// edges; opacity is animated each frame.
+const damageEdgeEl = document.createElement('div');
+damageEdgeEl.style.position = 'fixed';
+damageEdgeEl.style.inset = '0';
+damageEdgeEl.style.pointerEvents = 'none';
+damageEdgeEl.style.zIndex = '5';
+damageEdgeEl.style.background =
+  'radial-gradient(ellipse at center, rgba(255,0,0,0) 30%, rgba(180,0,0,0.45) 70%, rgba(220,0,0,0.85) 100%)';
+damageEdgeEl.style.opacity = '0';
+document.body.appendChild(damageEdgeEl);
+
+let damageFlash = 0; // 0..1; decays over ~0.6s
+
+function flashDamage(): void {
+  damageFlash = 1.0;
+}
+
+function updateDamageFlash(dt: number): void {
+  if (damageFlash > 0) {
+    damageFlash = Math.max(0, damageFlash - dt * 1.6);
+    damageEdgeEl.style.opacity = damageFlash.toFixed(3);
+  }
+}
+
 // --- monsters -------------------------------------------------------------
 
-interface MonsterTemplate {
-  scene: THREE.Object3D;        // raw gltf scene (cloned per spawn)
-  clips: THREE.AnimationClip[];
-  walkClipName?: string;        // pre-resolved walk clip name
-  scale: number;                // uniform scale to MONSTER_HEIGHT
-  baseY: number;                // y-shift so feet are at y=0 in template
+interface MonsterVariant {
+  /** Top-level subtree (one zombie's worth of meshes & bones) */
+  root: THREE.Object3D;
+  scale: number;
+  baseY: number;
   centerXZ: { x: number; z: number };
 }
 
+interface MonsterTemplate {
+  variants: MonsterVariant[];   // 1+ — for packs we pick a random variant per spawn
+  clips: THREE.AnimationClip[];
+  walkClipName?: string;
+  attackClipName?: string;
+  deathClipName?: string;
+}
+
 let monsterTemplate: MonsterTemplate | null = null;
+
+type MonsterState = 'walking' | 'attacking' | 'dying';
 
 interface Monster {
   group: THREE.Object3D;
   mixer: THREE.AnimationMixer;
   walkAction: THREE.AnimationAction | null;
+  attackAction: THREE.AnimationAction | null;
+  deathAction: THREE.AnimationAction | null;
+  state: MonsterState;
+  attackCooldown: number;
+  /** Time remaining in the death animation before despawn (0 = not dying). */
+  dyingTimer: number;
   /** World-space foot position on the asteroid surface. */
   position: THREE.Vector3;
   alive: boolean;
@@ -488,61 +537,137 @@ async function loadMonsterTemplate(): Promise<void> {
   catch (e) { console.warn('[monster] load failed:', e); return; }
 
   const root = gltf.scene;
-  const tmpRoot = new THREE.Group();
-  tmpRoot.add(root);
-  tmpRoot.updateMatrixWorld(true);
-  const bbox = meshOnlyBbox(tmpRoot);
-  const size = new THREE.Vector3(); bbox.getSize(size);
-  const center = new THREE.Vector3(); bbox.getCenter(center);
-  const targetH = MONSTER_HEIGHT;
-  const heightAxis = Math.max(size.x, size.y, size.z);
-  const scale = targetH / (heightAxis || 1);
 
-  // diagnostic: count meshes / skinned-meshes / materials in the template
-  let meshCount = 0, skinnedCount = 0, materialCount = 0;
-  root.traverse(c => {
-    const m = c as THREE.Mesh;
-    if (m.isMesh) {
-      meshCount++;
-      if ((m as unknown as THREE.SkinnedMesh).isSkinnedMesh) skinnedCount++;
-      if (m.material) materialCount++;
+  // Pack-aware variant detection:
+  // A "pack" glb often nests ALL zombies under a single root group (sometimes
+  // alongside a base platform mesh). Splitting by top-level children only
+  // gives us one giant clump.
+  // Instead, locate every SkinnedMesh in the scene, then for each one walk
+  // UP the ancestry chain until we hit an ancestor that contains *more than
+  // one* SkinnedMesh — that's the pack boundary. The previous (single-skinned)
+  // ancestor is the per-zombie root. This way each zombie's own armature +
+  // bones + mesh come along together, and the platform mesh is excluded.
+  const skinnedMeshes: THREE.Object3D[] = [];
+  root.traverse(c => { if ((c as THREE.SkinnedMesh).isSkinnedMesh) skinnedMeshes.push(c); });
+
+  const variantNodes: THREE.Object3D[] = [];
+  if (skinnedMeshes.length > 0) {
+    const seen = new Set<THREE.Object3D>();
+    for (const sm of skinnedMeshes) {
+      let candidate: THREE.Object3D = sm;
+      let parent: THREE.Object3D | null = sm.parent;
+      while (parent && parent !== root) {
+        let cnt = 0;
+        parent.traverse(c => { if ((c as THREE.SkinnedMesh).isSkinnedMesh) cnt++; });
+        if (cnt > 1) break;       // found the pack — stop one level below
+        candidate = parent;
+        parent = parent.parent;
+      }
+      if (!seen.has(candidate)) { seen.add(candidate); variantNodes.push(candidate); }
     }
-  });
+  } else {
+    // No skinning at all — fall back to top-level mesh-bearing children.
+    for (const child of root.children) {
+      let hasMesh = false;
+      child.traverse(c => { if ((c as THREE.Mesh).isMesh) hasMesh = true; });
+      if (hasMesh) variantNodes.push(child);
+    }
+  }
+  if (variantNodes.length === 0) variantNodes.push(root); // last-resort fallback
+
+  // For each variant, compute its own bbox/scale/center so packs with
+  // different-sized zombies all normalise to MONSTER_HEIGHT.
+  const variants: MonsterVariant[] = [];
+  for (const node of variantNodes) {
+    const tmp = new THREE.Group();
+    tmp.add(node);
+    tmp.updateMatrixWorld(true);
+    const bbox = meshOnlyBbox(tmp);
+    if (bbox.isEmpty()) continue;
+    const size = new THREE.Vector3(); bbox.getSize(size);
+    const center = new THREE.Vector3(); bbox.getCenter(center);
+    const heightAxis = Math.max(size.x, size.y, size.z);
+    const scale = MONSTER_HEIGHT / (heightAxis || 1);
+    variants.push({
+      root: node,
+      scale,
+      baseY: -bbox.min.y,
+      centerXZ: { x: center.x, z: center.z },
+    });
+    // re-attach to original root so SkeletonUtils.clone walks the right tree
+    root.add(node);
+  }
 
   monsterTemplate = {
-    scene: root,
+    variants,
     clips: gltf.animations,
     walkClipName: gltf.animations.find(c => /walk|run|move/i.test(c.name))?.name
                 ?? gltf.animations[0]?.name,
-    scale,
-    baseY: -bbox.min.y,
-    centerXZ: { x: center.x, z: center.z },
+    attackClipName: gltf.animations.find(c => /attack|swing|hit|bite|claw|punch/i.test(c.name))?.name,
+    deathClipName:  gltf.animations.find(c => /die|death|dead|fall|kill/i.test(c.name))?.name,
   };
   console.log(`[monster] template loaded:
-  bbox: ${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ${size.z.toFixed(2)} (m, glb units)
-  center: ${center.x.toFixed(2)}, ${center.y.toFixed(2)}, ${center.z.toFixed(2)}
-  scale: ${scale.toFixed(3)} → final height ${targetH}m
-  baseY shift: ${monsterTemplate.baseY.toFixed(2)}
-  meshes: ${meshCount} (skinned: ${skinnedCount}), materials: ${materialCount}
+  variants: ${variants.length}
+  scales: [${variants.map(v => v.scale.toFixed(2)).join(', ')}]
   clips: [${gltf.animations.map(c => `${c.name}/${c.duration.toFixed(2)}s`).join(', ')}]
-  walk: "${monsterTemplate.walkClipName}"`);
+  walk:   "${monsterTemplate.walkClipName}"
+  attack: "${monsterTemplate.attackClipName}"
+  death:  "${monsterTemplate.deathClipName}"`);
 }
 
 function spawnMonster(dir: THREE.Vector3): void {
-  if (!monsterTemplate) return;
+  if (!monsterTemplate || monsterTemplate.variants.length === 0) return;
+
+  // Pick a random variant from the pack.
+  const variant = monsterTemplate.variants[Math.floor(Math.random() * monsterTemplate.variants.length)];
+
   // SkeletonUtils.clone preserves the skeleton — plain clone() shares bones,
   // which causes all monsters to animate in lockstep.
-  const inst = cloneSkeleton(monsterTemplate.scene) as THREE.Object3D;
+  const inst = cloneSkeleton(variant.root) as THREE.Object3D;
 
   // Hierarchy: wrap (world position + scale + lookAt rotation) ← inst.
-  // Centering offset sits on inst (in glb units, before scale). Putting the
-  // scale on the OUTER wrap makes the offset behave consistently regardless
-  // of the model's source unit (otherwise a non-1.0 scale shifts the feet).
-  inst.position.set(-monsterTemplate.centerXZ.x, monsterTemplate.baseY, -monsterTemplate.centerXZ.z);
+  // Centering offset sits on inst (in glb units, before scale).
+  inst.position.set(-variant.centerXZ.x, variant.baseY, -variant.centerXZ.z);
 
   const wrap = new THREE.Group();
   wrap.add(inst);
-  wrap.scale.setScalar(monsterTemplate.scale);
+  wrap.scale.setScalar(variant.scale);
+
+  // Force every node visible & uncullable. Some glbs ship with hidden helper
+  // nodes or have local-space bounding boxes that don't survive skeletal
+  // animation — frustum culling then drops the mesh as the bones move it
+  // out of the original bbox. Disabling culling on monsters costs nothing
+  // (we have ≤10 of them) and guarantees they always render.
+  wrap.traverse(c => {
+    c.visible = true;
+    c.frustumCulled = false;
+    const mesh = c as THREE.Mesh;
+    if (!mesh.isMesh || !mesh.material) return;
+
+    // Each spawn must have its own material — without cloning, materials are
+    // shared with the template and our tint below would affect every monster.
+    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    const cloned = mats.map(m => m.clone());
+    mesh.material = Array.isArray(mesh.material) ? cloned : cloned[0];
+
+    for (const mat of cloned) {
+      const sm = mat as THREE.MeshStandardMaterial;
+      // Force opaque (some glbs ship transparent: true with opacity 1).
+      if (sm.opacity != null && sm.opacity < 1) sm.opacity = 1;
+      // If the material has no diffuse texture and is near-white (the model
+      // shipped no albedo map), tint it a sickly zombie green so it actually
+      // looks like a creature and not a paper cutout.
+      if (sm.color && !sm.map) {
+        const c0 = sm.color;
+        if (c0.r > 0.85 && c0.g > 0.85 && c0.b > 0.85) {
+          c0.setHex(0x536b3a);
+          sm.roughness = Math.max(0.7, sm.roughness ?? 0.7);
+          sm.metalness = 0;
+          sm.envMapIntensity = 0.3; // damp env reflections for non-PBR look
+        }
+      }
+    }
+  });
 
   // Place on surface immediately so the first frame doesn't show monsters
   // bunched at world origin.
@@ -552,16 +677,6 @@ function spawnMonster(dir: THREE.Vector3): void {
   wrap.up.copy(dir);
   scene.add(wrap);
 
-  // DEBUG marker: bright red sphere at the monster's spawn point. If the
-  // user sees these but no zombies, the model is the issue (skeleton clone,
-  // material, animation collapse). If no markers either, the position
-  // calculation is wrong.
-  const marker = new THREE.Mesh(
-    new THREE.SphereGeometry(0.6, 12, 8),
-    new THREE.MeshBasicMaterial({ color: 0xff0000 }),
-  );
-  marker.position.copy(position).add(dir.clone().multiplyScalar(2)); // 2m above the surface
-  scene.add(marker);
 
   const mixer = new THREE.AnimationMixer(inst);
   let walkAction: THREE.AnimationAction | null = null;
@@ -575,7 +690,17 @@ function spawnMonster(dir: THREE.Vector3): void {
     }
   }
 
-  monsters.push({ group: wrap, mixer, walkAction, position, alive: true });
+  monsters.push({
+    group: wrap, mixer,
+    walkAction,
+    attackAction: null,
+    deathAction: null,
+    state: 'walking',
+    attackCooldown: 0,
+    dyingTimer: 0,
+    position,
+    alive: true,
+  });
   console.log(`[monster] spawned at (${position.x.toFixed(1)}, ${position.y.toFixed(1)}, ${position.z.toFixed(1)})`);
 }
 
@@ -593,25 +718,85 @@ async function spawnInitialMonsters(): Promise<void> {
   console.log(`[monster] spawned ${placed}/${MONSTER_COUNT}`);
 }
 
+const ATTACK_RANGE = 1.6;        // start attacking when within this distance
+const ATTACK_INTERVAL = 1.4;     // seconds between hits
+
+/**
+ * Switch monster to a new animation state by crossfading clips. A monster
+ * has up to three clip slots (walk, attack, death); only one plays at a time.
+ */
+function setMonsterState(m: Monster, state: MonsterState): void {
+  if (m.state === state) return;
+  m.state = state;
+
+  // fade everything out, then fade in the relevant one
+  if (m.walkAction)   m.walkAction.fadeOut(0.15);
+  if (m.attackAction) m.attackAction.fadeOut(0.15);
+  if (m.deathAction)  m.deathAction.fadeOut(0.15);
+
+  if (state === 'walking' && m.walkAction) {
+    m.walkAction.reset().fadeIn(0.15).play();
+    m.walkAction.setLoop(THREE.LoopRepeat, Infinity);
+  } else if (state === 'attacking' && m.attackAction) {
+    m.attackAction.reset().fadeIn(0.1).play();
+    m.attackAction.setLoop(THREE.LoopRepeat, Infinity);
+  } else if (state === 'dying' && m.deathAction) {
+    m.deathAction.reset().fadeIn(0.05).play();
+    m.deathAction.setLoop(THREE.LoopOnce, 1);
+    m.deathAction.clampWhenFinished = true;
+  }
+}
+
 function tickMonsters(dt: number): void {
-  for (const m of monsters) {
-    if (!m.alive) continue;
+  for (let i = monsters.length - 1; i >= 0; i--) {
+    const m = monsters[i];
+
+    // Lazy-bind attack/death actions (template may not have been read until now)
+    if (!m.attackAction && monsterTemplate?.attackClipName) {
+      const clip = monsterTemplate.clips.find(c => c.name === monsterTemplate!.attackClipName);
+      if (clip) m.attackAction = m.mixer.clipAction(clip);
+    }
+    if (!m.deathAction && monsterTemplate?.deathClipName) {
+      const clip = monsterTemplate.clips.find(c => c.name === monsterTemplate!.deathClipName);
+      if (clip) m.deathAction = m.mixer.clipAction(clip);
+    }
+
     m.mixer.update(dt);
 
-    // Vector from monster's foot position toward player (world space)
+    if (m.state === 'dying') {
+      m.dyingTimer -= dt;
+      if (m.dyingTimer <= 0) {
+        // Despawn after the death animation finishes.
+        scene.remove(m.group);
+        m.group.traverse(c => {
+          const mesh = c as THREE.Mesh;
+          if (mesh.isMesh && mesh.geometry) mesh.geometry.dispose();
+        });
+        monsters.splice(i, 1);
+      }
+      continue;
+    }
+
+    if (!m.alive) continue;
+
     const toPlayer = player.position.clone().sub(m.position);
     const dist = toPlayer.length();
 
-    if (dist > MONSTER_TOUCH_DIST) {
-      // Project the to-player vector onto the local tangent plane (perp to
-      // monster's outward direction) so we walk along the surface.
+    if (m.attackCooldown > 0) m.attackCooldown -= dt;
+
+    if (dist <= ATTACK_RANGE) {
+      setMonsterState(m, 'attacking');
+      if (m.attackCooldown <= 0) {
+        m.attackCooldown = ATTACK_INTERVAL;
+        flashDamage();
+      }
+    } else {
+      setMonsterState(m, 'walking');
       const up = m.position.clone().normalize();
       const tangent = toPlayer.clone().sub(up.clone().multiplyScalar(toPlayer.dot(up)));
       if (tangent.lengthSq() > 1e-6) {
         tangent.normalize();
         m.position.addScaledVector(tangent, MONSTER_SPEED * dt);
-        // snap back to surface (table lookup is OK here — small inaccuracy
-        // doesn't matter for monsters)
         const newUp = m.position.clone().normalize();
         const r = getSurfaceRadius(newUp);
         m.position.copy(newUp).multiplyScalar(r);
@@ -622,7 +807,6 @@ function tickMonsters(dt: number): void {
     const stand = m.position.clone().normalize();
     m.group.position.copy(m.position);
     m.group.up.copy(stand);
-    // look toward player projected onto tangent plane
     const lookTarget = m.position.clone().add(toPlayer);
     m.group.lookAt(lookTarget);
   }
@@ -784,23 +968,117 @@ function attack(): void {
   while (node) {
     const m = monsters.find(x => x.group === node);
     if (m) {
-      killMonster(m);
+      killMonster(m, hit.point);
       return;
     }
     node = node.parent;
   }
 }
 
-function killMonster(m: Monster): void {
+function killMonster(m: Monster, hitPoint: THREE.Vector3): void {
   if (!m.alive) return;
   m.alive = false;
-  // simple "death": tip over and fade out via opacity.
-  // For now, just remove from scene immediately.
-  scene.remove(m.group);
+
+  // Lazy-bind deathAction since template may not have been read for this monster yet.
+  if (!m.deathAction && monsterTemplate?.deathClipName) {
+    const clip = monsterTemplate.clips.find(c => c.name === monsterTemplate!.deathClipName);
+    if (clip) m.deathAction = m.mixer.clipAction(clip);
+  }
+
+  if (m.deathAction) {
+    setMonsterState(m, 'dying');
+    // Despawn one second after the animation ends, so the body lingers.
+    const clipLen = m.deathAction.getClip().duration;
+    m.dyingTimer = clipLen + 1.0;
+  } else {
+    // Fallback: shatter the monster into individual polygons, same effect as rocks.
+    shatterMonster(m, hitPoint);
+  }
+}
+
+/**
+ * Shatter a monster into per-triangle fragments. Uses bind-pose vertex
+ * positions (current bone deformation isn't applied — would require
+ * SkinnedMesh.applyBoneTransform per-vertex, which is fine but adds cost).
+ * For a fast death effect this is plenty close.
+ */
+function shatterMonster(m: Monster, hitPoint: THREE.Vector3): void {
+  m.group.updateMatrixWorld(true);
+
+  type Tri = { a: THREE.Vector3; b: THREE.Vector3; c: THREE.Vector3; mat: THREE.Material };
+  const tris: Tri[] = [];
+
   m.group.traverse(c => {
     const mesh = c as THREE.Mesh;
-    if (mesh.isMesh && mesh.geometry) mesh.geometry.dispose();
+    if (!mesh.isMesh || !mesh.geometry) return;
+    const geom = mesh.geometry;
+    const pos = geom.attributes.position as THREE.BufferAttribute;
+    const idx = geom.index;
+    const m2w = mesh.matrixWorld;
+    const triCount = idx ? idx.count / 3 : pos.count / 3;
+    const mat = (Array.isArray(mesh.material) ? mesh.material[0] : mesh.material) as THREE.Material;
+    for (let t = 0; t < triCount; t++) {
+      const ai = idx ? idx.getX(t * 3)     : t * 3;
+      const bi = idx ? idx.getX(t * 3 + 1) : t * 3 + 1;
+      const ci = idx ? idx.getX(t * 3 + 2) : t * 3 + 2;
+      const a = new THREE.Vector3().fromBufferAttribute(pos, ai).applyMatrix4(m2w);
+      const b = new THREE.Vector3().fromBufferAttribute(pos, bi).applyMatrix4(m2w);
+      const c2 = new THREE.Vector3().fromBufferAttribute(pos, ci).applyMatrix4(m2w);
+      tris.push({ a, b, c: c2, mat });
+    }
   });
+
+  // Remove the monster immediately.
+  scene.remove(m.group);
+  const idx = monsters.indexOf(m);
+  if (idx >= 0) monsters.splice(idx, 1);
+
+  // Emit fragments (subsampled).
+  const step = Math.max(1, Math.ceil(tris.length / FRAG_MAX_PER_SHATTER));
+  for (let i = 0; i < tris.length; i += step) {
+    const { a, b, c, mat } = tris[i];
+    const center = a.clone().add(b).add(c).divideScalar(3);
+
+    const fragGeom = new THREE.BufferGeometry();
+    fragGeom.setAttribute('position', new THREE.Float32BufferAttribute([
+      a.x - center.x, a.y - center.y, a.z - center.z,
+      b.x - center.x, b.y - center.y, b.z - center.z,
+      c.x - center.x, c.y - center.y, c.z - center.z,
+    ], 3));
+    fragGeom.computeVertexNormals();
+
+    const sm = mat as THREE.MeshStandardMaterial;
+    const fragMat = new THREE.MeshStandardMaterial({
+      color: sm.color ? sm.color.clone() : new THREE.Color(0x886666),
+      roughness: sm.roughness ?? 0.85,
+      metalness: sm.metalness ?? 0,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 1,
+      flatShading: true,
+    });
+
+    const fragMesh = new THREE.Mesh(fragGeom, fragMat);
+    fragMesh.position.copy(center);
+
+    const outward = center.clone().sub(hitPoint);
+    const dist = outward.length() || 0.0001;
+    outward.divideScalar(dist);
+    const speed = 5 + Math.random() * 5;
+    const velocity = outward.multiplyScalar(speed);
+    velocity.x += (Math.random() - 0.5) * 2;
+    velocity.y += (Math.random() - 0.5) * 2;
+    velocity.z += (Math.random() - 0.5) * 2;
+
+    const angVel = new THREE.Vector3(
+      (Math.random() - 0.5) * 14,
+      (Math.random() - 0.5) * 14,
+      (Math.random() - 0.5) * 14,
+    );
+
+    scene.add(fragMesh);
+    fragments.push({ mesh: fragMesh, velocity, angVel, life: 0, maxLife: FRAG_LIFE });
+  }
 }
 
 // --- player ---------------------------------------------------------------
@@ -992,6 +1270,7 @@ function animate(): void {
     tickMonsters(dt);
     updateWeapon(dt);
     updateFragments(dt);
+    updateDamageFlash(dt);
 
     if (flashTime > 0) {
       flashTime -= dt;

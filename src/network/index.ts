@@ -172,6 +172,7 @@ socket.on('message', (raw) => {
       break;
 
     case 'action_rejected':
+      console.warn('[server rejected action]', msg.reason);
       for (const fn of errorListeners) fn(`action rejected: ${msg.reason}`);
       break;
 

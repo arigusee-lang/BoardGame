@@ -35,14 +35,17 @@ export function dispatch(action: Action): boolean {
   // We do NOT also run the action locally — that would cause double-mutation
   // when the snapshot comes back.
   if (net.getIdentity() !== null && net.isConnected()) {
-    return net.sendAction(action);
+    const sent = net.sendAction(action);
+    console.log('[dispatch → server]', action.type, sent ? 'sent' : 'DROPPED');
+    return sent;
   }
 
   // Single-player mode (no room). Run the reducer locally; events emitted
   // during the call are picked up by the microtask sink (eventApplier).
+  console.log('[dispatch local]', action.type);
   const result = applyAction(action);
   if (!result.ok) {
-    console.warn('[actionDispatcher]', result.error);
+    console.warn('[dispatch local rejected]', action.type, result.error);
     return false;
   }
   return true;
