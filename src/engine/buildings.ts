@@ -288,10 +288,9 @@ export function activateFoundationTargeting(): void {
   renderUI();
 }
 
-export function confirmFoundationUse(): void {
+export function executeFoundationConfirm(targetBuildingId: string): void {
   const currentPlayer = getCurrentPlayer();
-  const targetBuildingId = state.pendingFoundationTargetBuildingId;
-  const targetBuilding = targetBuildingId ? getBuildingById(currentPlayer.id, targetBuildingId) : null;
+  const targetBuilding = getBuildingById(currentPlayer.id, targetBuildingId);
   if (!targetBuilding) {
     addLog('Selected building is no longer available.');
     clearSelection();
@@ -332,6 +331,22 @@ export function confirmFoundationUse(): void {
   clearSelection();
   syncBoardVisualState();
   renderUI();
+}
+
+/**
+ * Backwards-compat wrapper: reads pendingFoundationTargetBuildingId out of
+ * state and delegates. Used by call sites that haven't been migrated to
+ * the FOUNDATION_CONFIRM action yet.
+ */
+export function confirmFoundationUse(): void {
+  const targetBuildingId = state.pendingFoundationTargetBuildingId;
+  if (!targetBuildingId) {
+    addLog('Selected building is no longer available.');
+    clearSelection();
+    renderUI();
+    return;
+  }
+  executeFoundationConfirm(targetBuildingId);
 }
 
 // ---------------------------------------------------------------------------
@@ -1048,6 +1063,52 @@ export function confirmAssemblyLineBuildPlacement(): void {
 }
 
 // ---------------------------------------------------------------------------
+// Unified building activation — routes by building.type + ability slot.
+// Single entry point for the ACTIVATE_BUILDING action.
+// ---------------------------------------------------------------------------
+
+export type BuildingAbility = 'production' | 'overload' | 'obtain' | 'draw' | 'upgrade';
+
+export function executeActivateBuilding(buildingId: string, ability: BuildingAbility): void {
+  const currentPlayer = getCurrentPlayer();
+  const building = currentPlayer.buildings.find((b: Building) => b.id === buildingId);
+  if (!building) {
+    addLog('Building not found.');
+    return;
+  }
+
+  if (ability === 'upgrade') {
+    activateBuildingUpgrade(buildingId);
+    return;
+  }
+  if (ability === 'overload') {
+    if (building.type !== 'GEAR_STATION') return;
+    activateGearStationOverload(buildingId);
+    return;
+  }
+  if (ability === 'obtain') {
+    if (building.type !== 'DATACENTER') return;
+    activateDatacenterObtain(buildingId);
+    return;
+  }
+  if (ability === 'draw') {
+    if (building.type !== 'ASSEMBLY_LINE') return;
+    activateAssemblyLineDraw(buildingId);
+    return;
+  }
+  if (ability === 'production') {
+    switch (building.type) {
+      case 'ARMORY': activateArmoryProduction(buildingId); return;
+      case 'REPLICATOR': activateReplicatorProduction(buildingId); return;
+      case 'WORKSHOP': activateWorkshopProduction(buildingId); return;
+      case 'DATACENTER': activateDatacenterProduction(buildingId); return;
+      case 'GEAR_STATION': activateGearStationProduction(buildingId); return;
+      case 'ASSEMBLY_LINE': activateAssemblyLineProduction(buildingId); return;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Unified placement: handles all six status-pick buildings (Armory,
 // Replicator, Workshop, Datacenter, Gear Station, Assembly Line). The
 // per-building confirmXBuildPlacement functions remain for now as thin
@@ -1180,20 +1241,21 @@ interface HitUserData {
   };
 }
 
-export function handleOverloadTargetClick(hit: HitUserData): void {
+/**
+ * State-mutation core for the Overload target. Validates building +
+ * target, spends energy, applies the movement bonus. Called from both
+ * the legacy handler (handleOverloadTargetClick) and the reducer's
+ * GEAR_STATION_OVERLOAD_TARGET case.
+ */
+export function executeGearStationOverloadTarget(buildingId: string, targetUnitId: string): void {
   const currentPlayer = getCurrentPlayer();
-  const buildingId = state.overloadTargetingBuildingId;
   const building = currentPlayer.buildings.find((candidate: Building) => candidate.id === buildingId);
   if (!building || building.type !== 'GEAR_STATION') {
     clearSelection();
     renderUI();
     return;
   }
-  if (hit.userData.type !== 'unit') {
-    addLog('Select a friendly drone target for Overload.');
-    return;
-  }
-  const target = getUnitById(hit.userData.unitId!);
+  const target = getUnitById(targetUnitId);
   if (!canTargetUnitWithOverload(target)) {
     addLog('This drone is not a valid Overload target.');
     return;
@@ -1210,7 +1272,6 @@ export function handleOverloadTargetClick(hit: HitUserData): void {
     renderUI();
     return;
   }
-
   const movementGain = getOverloadBaseMoveForUnit(target);
   if (movementGain <= 0) {
     addLog('This drone cannot receive movement from Overload.');
@@ -1221,12 +1282,29 @@ export function handleOverloadTargetClick(hit: HitUserData): void {
   building.overloadUsedThisTurn = true;
   target!.overloadBonusMovementThisTurn = (target!.overloadBonusMovementThisTurn ?? 0) + movementGain;
   addLog(
-    `Player ${currentPlayer.id} used Overload (${getBuildingDisplayName(building)}) on ${target!.unitName}: +${movementGain} Movement this turn.`
+    `Player ${currentPlayer.id} used Overload (${getBuildingDisplayName(building)}) on ${target!.unitName}: +${movementGain} Movement this turn.`,
   );
   state.mode = 'idle';
   state.overloadTargetingBuildingId = null;
   syncBoardVisualState();
   renderUI();
+}
+
+export function handleOverloadTargetClick(hit: HitUserData): void {
+  const buildingId = state.overloadTargetingBuildingId;
+  if (!buildingId) {
+    clearSelection();
+    renderUI();
+    return;
+  }
+  if (hit.userData.type !== 'unit') {
+    addLog('Select a friendly drone target for Overload.');
+    return;
+  }
+  // Input layer hands the validated targetUnitId to the engine.
+  const targetId = hit.userData.unitId;
+  if (!targetId) return;
+  executeGearStationOverloadTarget(buildingId, targetId);
 }
 
 // ---------------------------------------------------------------------------

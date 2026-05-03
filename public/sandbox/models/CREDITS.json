@@ -111,13 +111,13 @@
   },
   {
     "slug": "fps_rifle",
-    "uid": "6348dc53e3e249c6b297cb8f3f1e3e9b",
-    "name": "AKM Assault Rifle - Animated",
-    "author": "user77",
+    "uid": "5f2d0ed780a94724b36ab505f7564057",
+    "name": "Animated FPS hands (rifle animation pack)",
+    "author": "Cransh",
     "license": "CC Attribution",
-    "source": "https://sketchfab.com/3d-models/none-6348dc53e3e249c6b297cb8f3f1e3e9b",
-    "faceCount": 33305,
-    "bytes": 11938712
+    "source": "https://sketchfab.com/3d-models/none-5f2d0ed780a94724b36ab505f7564057",
+    "faceCount": 26702,
+    "bytes": 14543912
   },
   {
     "slug": "monster",

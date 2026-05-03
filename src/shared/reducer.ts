@@ -56,6 +56,9 @@ import {
   executePlayBuildCard,
   executeCancelBuildingPlacement,
   executeConfirmBuildingUpgrade,
+  executeActivateBuilding,
+  executeGearStationOverloadTarget,
+  executeFoundationConfirm,
 } from '../engine/buildings.ts';
 import { CARD_LIBRARY } from '../data/cardLibrary.ts';
 import { setEnergy } from '../engine/playerResources.ts';
@@ -280,14 +283,19 @@ export function applyAction(action: Action): ReduceResult | ReduceError {
       return { ok: true, events: [] };
     }
 
-    case 'ACTIVATE_BUILDING':
-    case 'GEAR_STATION_OVERLOAD_TARGET':
-    case 'FOUNDATION_TARGET':
-    case 'FOUNDATION_CONFIRM':
-      return {
-        ok: false,
-        error: `Action ${action.type} not yet wired through reducer; input layer still calls engine directly.`,
-        events: [],
-      };
+    case 'ACTIVATE_BUILDING': {
+      executeActivateBuilding(action.buildingId, action.ability);
+      return { ok: true, events: [] };
+    }
+
+    case 'GEAR_STATION_OVERLOAD_TARGET': {
+      executeGearStationOverloadTarget(action.buildingId, action.targetUnitId);
+      return { ok: true, events: [] };
+    }
+
+    case 'FOUNDATION_CONFIRM': {
+      executeFoundationConfirm(action.targetBuildingId);
+      return { ok: true, events: [] };
+    }
   }
 }

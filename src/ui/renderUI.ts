@@ -53,17 +53,6 @@ import {
   canBuildingBeUpgraded,
   getBuildingUpgradeSupplyCost,
   activateFoundationTargeting,
-  confirmFoundationUse,
-  activateArmoryProduction,
-  activateReplicatorProduction,
-  activateWorkshopProduction,
-  activateDatacenterObtain,
-  activateDatacenterProduction,
-  activateGearStationOverload,
-  activateGearStationProduction,
-  activateAssemblyLineDraw,
-  activateAssemblyLineProduction,
-  activateBuildingUpgrade,
 } from '../engine/buildings.ts';
 import type { BuildingType } from '../types';
 import { activateRepairTargeting } from '../engine/abilities.ts';
@@ -1208,7 +1197,9 @@ export function renderUI(): void {
   const confirmFoundationBtn = overlayEl.querySelector('#confirmFoundationBtn');
   if (confirmFoundationBtn) {
     confirmFoundationBtn.addEventListener('click', () => {
-      confirmFoundationUse();
+      const targetBuildingId = state.pendingFoundationTargetBuildingId;
+      if (!targetBuildingId) return;
+      dispatch({ type: 'FOUNDATION_CONFIRM', targetBuildingId });
     });
   }
 
@@ -1398,105 +1389,31 @@ export function renderUI(): void {
     });
   }
 
-  handEl.querySelectorAll<HTMLButtonElement>('[data-armory-id]').forEach((btn: HTMLButtonElement) => {
-    btn.addEventListener('click', () => {
-      const buildingId = btn.getAttribute('data-armory-id');
-      if (!buildingId) {
-        return;
-      }
-      activateArmoryProduction(buildingId);
+  // Map data-attribute → (ability slot for ACTIVATE_BUILDING). The 'production'
+  // ability is implicit for the Armory/Replicator/Workshop main button; the
+  // *-create-id variants on Datacenter/Gear Station/Assembly Line are the
+  // building's secondary "produce a card" slot, which still maps to the same
+  // 'production' ability in the reducer (the engine routes by building.type).
+  const wireBuildingAbility = (selector: string, ability: 'production' | 'overload' | 'obtain' | 'draw' | 'upgrade', attr: string): void => {
+    handEl.querySelectorAll<HTMLButtonElement>(selector).forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const buildingId = btn.getAttribute(attr);
+        if (!buildingId) return;
+        dispatch({ type: 'ACTIVATE_BUILDING', buildingId, ability });
+      });
     });
-  });
+  };
 
-  handEl.querySelectorAll<HTMLButtonElement>('[data-replicator-id]').forEach((btn: HTMLButtonElement) => {
-    btn.addEventListener('click', () => {
-      const buildingId = btn.getAttribute('data-replicator-id');
-      if (!buildingId) {
-        return;
-      }
-      activateReplicatorProduction(buildingId);
-    });
-  });
-
-  handEl.querySelectorAll<HTMLButtonElement>('[data-workshop-id]').forEach((btn: HTMLButtonElement) => {
-    btn.addEventListener('click', () => {
-      const buildingId = btn.getAttribute('data-workshop-id');
-      if (!buildingId) {
-        return;
-      }
-      activateWorkshopProduction(buildingId);
-    });
-  });
-
-  handEl.querySelectorAll<HTMLButtonElement>('[data-datacenter-id]').forEach((btn: HTMLButtonElement) => {
-    btn.addEventListener('click', () => {
-      const buildingId = btn.getAttribute('data-datacenter-id');
-      if (!buildingId) {
-        return;
-      }
-      activateDatacenterObtain(buildingId);
-    });
-  });
-
-  handEl.querySelectorAll<HTMLButtonElement>('[data-gear-station-id]').forEach((btn: HTMLButtonElement) => {
-    btn.addEventListener('click', () => {
-      const buildingId = btn.getAttribute('data-gear-station-id');
-      if (!buildingId) {
-        return;
-      }
-      activateGearStationOverload(buildingId);
-    });
-  });
-
-  handEl.querySelectorAll<HTMLButtonElement>('[data-assembly-line-id]').forEach((btn: HTMLButtonElement) => {
-    btn.addEventListener('click', () => {
-      const buildingId = btn.getAttribute('data-assembly-line-id');
-      if (!buildingId) {
-        return;
-      }
-      activateAssemblyLineDraw(buildingId);
-    });
-  });
-
-  handEl.querySelectorAll<HTMLButtonElement>('[data-datacenter-create-id]').forEach((btn: HTMLButtonElement) => {
-    btn.addEventListener('click', () => {
-      const buildingId = btn.getAttribute('data-datacenter-create-id');
-      if (!buildingId) {
-        return;
-      }
-      activateDatacenterProduction(buildingId);
-    });
-  });
-
-  handEl.querySelectorAll<HTMLButtonElement>('[data-gear-station-create-id]').forEach((btn: HTMLButtonElement) => {
-    btn.addEventListener('click', () => {
-      const buildingId = btn.getAttribute('data-gear-station-create-id');
-      if (!buildingId) {
-        return;
-      }
-      activateGearStationProduction(buildingId);
-    });
-  });
-
-  handEl.querySelectorAll<HTMLButtonElement>('[data-assembly-line-create-id]').forEach((btn: HTMLButtonElement) => {
-    btn.addEventListener('click', () => {
-      const buildingId = btn.getAttribute('data-assembly-line-create-id');
-      if (!buildingId) {
-        return;
-      }
-      activateAssemblyLineProduction(buildingId);
-    });
-  });
-
-  handEl.querySelectorAll<HTMLButtonElement>('[data-upgrade-building-id]').forEach((btn: HTMLButtonElement) => {
-    btn.addEventListener('click', () => {
-      const buildingId = btn.getAttribute('data-upgrade-building-id');
-      if (!buildingId) {
-        return;
-      }
-      activateBuildingUpgrade(buildingId);
-    });
-  });
+  wireBuildingAbility('[data-armory-id]', 'production', 'data-armory-id');
+  wireBuildingAbility('[data-replicator-id]', 'production', 'data-replicator-id');
+  wireBuildingAbility('[data-workshop-id]', 'production', 'data-workshop-id');
+  wireBuildingAbility('[data-datacenter-id]', 'obtain', 'data-datacenter-id');
+  wireBuildingAbility('[data-gear-station-id]', 'overload', 'data-gear-station-id');
+  wireBuildingAbility('[data-assembly-line-id]', 'draw', 'data-assembly-line-id');
+  wireBuildingAbility('[data-datacenter-create-id]', 'production', 'data-datacenter-create-id');
+  wireBuildingAbility('[data-gear-station-create-id]', 'production', 'data-gear-station-create-id');
+  wireBuildingAbility('[data-assembly-line-create-id]', 'production', 'data-assembly-line-create-id');
+  wireBuildingAbility('[data-upgrade-building-id]', 'upgrade', 'data-upgrade-building-id');
 
   const tacticalDashButton = handEl.querySelector('#abilityTacticalDash');
   if (tacticalDashButton) {

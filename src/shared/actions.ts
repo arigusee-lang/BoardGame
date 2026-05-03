@@ -73,8 +73,7 @@ export type Action =
     }
   | { type: 'GEAR_STATION_OVERLOAD_TARGET'; buildingId: string; targetUnitId: string }
   | { type: 'CONFIRM_BUILDING_UPGRADE'; buildingId: string; statusId: StatusId }
-  | { type: 'FOUNDATION_TARGET'; targetBuildingId: string }
-  | { type: 'FOUNDATION_CONFIRM' }
+  | { type: 'FOUNDATION_CONFIRM'; targetBuildingId: string }
 
   // --- Process Echo storage (only for Harvest Data into slot X; perk-card
   //     storage in slots 1/2/3 happens via PLAY_* actions with source='echo' ---

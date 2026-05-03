@@ -1063,24 +1063,32 @@ function tickHpBar(m: Monster): void {
 
 // --- weapon (FPS rig glb with arms + animations) --------------------------
 
+type WeaponPrimary = 'drawing' | 'idle' | 'running' | 'firing' | 'reloading';
+
 interface WeaponState {
   group: THREE.Group;
   mixer: THREE.AnimationMixer | null;
-  fireClip: THREE.AnimationClip | null;
-  idleClip: THREE.AnimationClip | null;
-  reloadClip: THREE.AnimationClip | null;
-  fireAction: THREE.AnimationAction | null;
-  idleAction: THREE.AnimationAction | null;
+  // Clip slots (any may be null if the glb didn't include that motion).
+  drawAction:   THREE.AnimationAction | null;
+  idleAction:   THREE.AnimationAction | null;
+  runAction:    THREE.AnimationAction | null;
+  fireAction:   THREE.AnimationAction | null;
   reloadAction: THREE.AnimationAction | null;
+  // Active animation state. The primary action plays on the mixer; transient
+  // states (drawing/firing/reloading) override the base for `primaryTimer`
+  // seconds, then we fall back to idle or running based on movement.
+  primary: WeaponPrimary;
+  primaryAction: THREE.AnimationAction | null;
+  primaryTimer: number;
+  // Cooldowns / magazine.
   cooldown: number;
-  // Magazine + reload state
   ammo: number;
   reloading: boolean;
-  reloadTimer: number;     // remaining seconds of reload
+  recoil: number;          // procedural recoil only used when no fireAction
 }
 
 let weapon: WeaponState | null = null;
-const FIRE_COOLDOWN = 0.10;
+let FIRE_COOLDOWN = 0.10;        // overwritten by Shoot clip duration once weapon loads
 const FIRE_RANGE = 200;
 const MAG_SIZE = 30;
 const RELOAD_TIME = 2.0;  // seconds to reload (clip duration overrides this when available)
@@ -1132,54 +1140,93 @@ async function loadWeapon(): Promise<void> {
   const clips = gltf.animations;
   const mixer = clips.length > 0 ? new THREE.AnimationMixer(inner) : null;
 
-  let fireClip: THREE.AnimationClip | null = null;
-  let idleClip: THREE.AnimationClip | null = null;
-  let reloadClip: THREE.AnimationClip | null = null;
-  for (const clip of clips) {
-    const n = clip.name.toLowerCase();
-    // Match shoot/fire but NOT "aim shoot" if a plain shoot exists; keep simple
-    if (!fireClip   && /\b(shoot|fire|attack)\b/.test(n) && !n.includes('aim')) fireClip = clip;
-    if (!idleClip   && /\b(idle|rest)\b/.test(n)) idleClip = clip;
-    // Plain "reload" preferred over "reload1"/"reload2"
-    if (n === 'reload' && !reloadClip) reloadClip = clip;
-  }
-  // fallback to any reload variant
-  if (!reloadClip) reloadClip = clips.find(c => /reload/i.test(c.name)) ?? null;
-  // fallback for fire if nothing matched
-  if (!fireClip) fireClip = clips.find(c => /shoot|fire/i.test(c.name)) ?? null;
+  // Pick clips by name. The Cransh pack uses "Arms_FPS_Anim_<Action>" naming.
+  // Skip "OneShot" deliberately — user requested using the looping "Shoot" instead.
+  const findClip = (re: RegExp, exclude?: RegExp) =>
+    clips.find(c => re.test(c.name.toLowerCase()) && !(exclude && exclude.test(c.name.toLowerCase()))) ?? null;
 
-  let fireAction: THREE.AnimationAction | null = null;
-  let idleAction: THREE.AnimationAction | null = null;
-  let reloadAction: THREE.AnimationAction | null = null;
-  if (mixer) {
-    if (idleClip) {
-      idleAction = mixer.clipAction(idleClip);
-      idleAction.setLoop(THREE.LoopRepeat, Infinity);
-      idleAction.play();
-    }
-    if (fireClip) {
-      fireAction = mixer.clipAction(fireClip);
-      fireAction.setLoop(THREE.LoopOnce, 1);
-      fireAction.clampWhenFinished = false;
-    }
-    if (reloadClip) {
-      reloadAction = mixer.clipAction(reloadClip);
-      reloadAction.setLoop(THREE.LoopOnce, 1);
-      reloadAction.clampWhenFinished = false;
-    }
-  }
+  const drawClip   = findClip(/draw/);
+  const idleClip   = findClip(/\b(idle|rest)\b/) ?? (clips.length === 1 ? clips[0] : null);
+  const runClip    = findClip(/\brun\b|\bsprint\b/);
+  const fireClip   = findClip(/shoot|fire/, /oneshot|aim/);
+  const reloadClip = findClip(/reload/);
 
-  console.log(`[weapon] loaded: bbox=${size.x.toFixed(2)}x${size.y.toFixed(2)}x${size.z.toFixed(2)}, scale=${scale.toFixed(3)}, clips=[${clips.map(c => c.name).join(', ')}], fire="${fireClip?.name}", idle="${idleClip?.name}", reload="${reloadClip?.name}"`);
+  const makeAction = (clip: THREE.AnimationClip | null, loop: boolean): THREE.AnimationAction | null => {
+    if (!mixer || !clip) return null;
+    const a = mixer.clipAction(clip);
+    a.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1);
+    a.clampWhenFinished = false;
+    return a;
+  };
+
+  // Shoot LOOPS — every clip iteration is one shot. User asked for this so
+  // sustained fire shows continuous animation rather than re-triggering.
+  const drawAction   = makeAction(drawClip,   false);
+  const idleAction   = makeAction(idleClip,   true);
+  const runAction    = makeAction(runClip,    true);
+  const fireAction   = makeAction(fireClip,   true);
+  const reloadAction = makeAction(reloadClip, false);
+
+  // Tie the firing-rate to the actual Shoot clip duration so visual loop and
+  // game-logic ticks stay in sync.
+  if (fireClip && fireClip.duration > 0.02) FIRE_COOLDOWN = fireClip.duration;
+
+  console.log(`[weapon] loaded: clips=[${clips.map(c => `${c.name}/${c.duration.toFixed(2)}s`).join(', ')}]
+  draw="${drawClip?.name}" idle="${idleClip?.name}" run="${runClip?.name}" fire="${fireClip?.name}" reload="${reloadClip?.name}"
+  FIRE_COOLDOWN=${FIRE_COOLDOWN.toFixed(3)}s (= shoot clip duration)`);
 
   weapon = {
     group: wrap, mixer,
-    fireClip, idleClip, reloadClip,
-    fireAction, idleAction, reloadAction,
+    drawAction, idleAction, runAction, fireAction, reloadAction,
+    primary: 'drawing',
+    primaryAction: null,
+    primaryTimer: 0,
     cooldown: 0,
     ammo: MAG_SIZE,
     reloading: false,
-    reloadTimer: 0,
+    recoil: 0,
   };
+
+  // Kick off the Draw animation immediately. After it finishes, the state
+  // machine in updateWeapon will fall back to idle (or running).
+  if (drawAction) {
+    transitionPrimary(weapon, 'drawing');
+  } else {
+    transitionPrimary(weapon, 'idle');
+  }
+}
+
+/**
+ * Cross-fade the weapon's primary action to the one matching `primary`.
+ * One-shot states (drawing/reloading) set primaryTimer to the clip's
+ * duration so updateWeapon knows when to fall back to the base.
+ */
+function transitionPrimary(w: WeaponState, primary: WeaponPrimary): void {
+  if (w.primary === primary) return;
+  let action: THREE.AnimationAction | null = null;
+  switch (primary) {
+    case 'drawing':   action = w.drawAction;   break;
+    case 'idle':      action = w.idleAction;   break;
+    case 'running':   action = w.runAction ?? w.idleAction; break;
+    case 'firing':    action = w.fireAction;   break;
+    case 'reloading': action = w.reloadAction; break;
+  }
+  w.primary = primary;
+  if (!action) {
+    w.primaryAction = null;
+    w.primaryTimer = 0;
+    return;
+  }
+  if (w.primaryAction && w.primaryAction !== action) {
+    w.primaryAction.fadeOut(0.12);
+  }
+  action.reset();
+  action.fadeIn(0.12);
+  action.play();
+  w.primaryAction = action;
+  // For one-shot states, remember how long the clip runs.
+  const oneShot = primary === 'drawing' || primary === 'reloading';
+  w.primaryTimer = oneShot ? action.getClip().duration : 0;
 }
 
 // muzzle flash (spawned manually since clip-driven flashes vary by rig)
@@ -1238,13 +1285,12 @@ function updateAmmoHud(): void {
 
 function startReload(): void {
   if (!weapon || weapon.reloading || weapon.ammo === MAG_SIZE) return;
+  // Don't reload while the Draw is still playing.
+  if (weapon.primary === 'drawing' && weapon.primaryTimer > 0) return;
   weapon.reloading = true;
-  if (weapon.reloadAction && weapon.reloadClip) {
-    weapon.reloadAction.reset().play();
-    weapon.reloadTimer = weapon.reloadClip.duration;
-  } else {
-    weapon.reloadTimer = RELOAD_TIME;
-  }
+  transitionPrimary(weapon, 'reloading');
+  // If there's no reload clip we still need a sane timer so ammo refills.
+  if (!weapon.reloadAction) weapon.primaryTimer = RELOAD_TIME;
   updateAmmoHud();
 }
 
@@ -1254,9 +1300,8 @@ const raycaster = new THREE.Raycaster();
 
 function attack(): void {
   if (!weapon || weapon.cooldown > 0) return;
-  // Out-of-ammo or actively reloading → block fire and trigger reload if we
-  // haven't already.
   if (weapon.reloading) return;
+  if (weapon.primary === 'drawing' && weapon.primaryTimer > 0) return;
   if (weapon.ammo <= 0) {
     startReload();
     return;
@@ -1271,13 +1316,10 @@ function attack(): void {
   flashSprite.scale.setScalar(0.35 + Math.random() * 0.2);
   flashSprite.material.rotation = Math.random() * Math.PI;
 
-  // fire animation
-  if (weapon.fireAction) {
-    weapon.fireAction.reset().play();
-  }
+  // Procedural recoil only when there's no Shoot clip — with a clip the
+  // looping animation already handles the visual.
+  if (!weapon.fireAction) weapon.recoil = 1;
 
-  // Auto-reload once the magazine empties — feels nicer than forcing the
-  // player to dry-click before pressing R.
   if (weapon.ammo === 0) startReload();
 
   // raycast against rocks AND monsters; pick the closer hit.
@@ -1585,19 +1627,43 @@ function tickPlayer(dt: number): void {
 function updateWeapon(dt: number): void {
   if (!weapon) return;
   if (weapon.cooldown > 0) weapon.cooldown = Math.max(0, weapon.cooldown - dt);
+  if (weapon.primaryTimer > 0) weapon.primaryTimer = Math.max(0, weapon.primaryTimer - dt);
 
-  if (weapon.reloading) {
-    weapon.reloadTimer -= dt;
-    if (weapon.reloadTimer <= 0) {
-      weapon.reloading = false;
-      weapon.ammo = MAG_SIZE;
-      updateAmmoHud();
-    }
+  // ---- state machine: pick desired primary state ----
+  let desired: WeaponPrimary;
+  if (weapon.primary === 'drawing' && weapon.primaryTimer > 0) {
+    desired = 'drawing';
+  } else if (weapon.reloading) {
+    desired = 'reloading';
+  } else if (firing && weapon.ammo > 0) {
+    desired = 'firing';
+  } else {
+    const moving = keys.has('KeyW') || keys.has('KeyS') || keys.has('KeyA') || keys.has('KeyD');
+    desired = moving ? 'running' : 'idle';
+  }
+  if (desired !== weapon.primary) transitionPrimary(weapon, desired);
+
+  // Reload completion: ammo refills when the timer runs out.
+  if (weapon.reloading && weapon.primaryTimer <= 0) {
+    weapon.reloading = false;
+    weapon.ammo = MAG_SIZE;
+    updateAmmoHud();
   }
 
-  // hold-to-fire (auto)
+  // Hold-to-fire — attack() guards on cooldown / reload / drawing.
   if (firing && weapon.cooldown <= 0 && !weapon.reloading) attack();
   if (weapon.mixer) weapon.mixer.update(dt);
+
+  // Procedural recoil fallback (only used when no Shoot clip).
+  if (weapon.recoil > 0) {
+    weapon.recoil = Math.max(0, weapon.recoil - dt * 8);
+    const k = weapon.recoil;
+    weapon.group.position.z = -0.45 + 0.05 * k;
+    weapon.group.rotation.x = -0.18 * k;
+  } else if (!weapon.fireAction) {
+    weapon.group.position.z = -0.45;
+    weapon.group.rotation.x = 0;
+  }
 }
 
 // --- credits --------------------------------------------------------------
