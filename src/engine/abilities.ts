@@ -19,8 +19,14 @@ import {
   getBulwarkAdjacentSquareKeys,
   canCoreMagnetHealThisTurn,
   markCoreMagnetHealedThisTurn,
-  casterHasRepairAbility
+  casterHasRepairAbility,
+  applyGhostbladeShellGuard,
+  hasSalvoEmpStatus,
+  getSpecialistEmpCooldownTurns
 } from './unitStats.ts';
+import { removeUnit } from './combat.ts';
+import { toSquareKey } from '../utils.ts';
+import { ATTACK_TYPES } from '../constants.ts';
 import { getCardEnergyCost } from './cards.ts';
 import { setEnergy, setSupply } from './playerResources.ts';
 import { applyUnitAttack } from './combat.ts';
@@ -496,6 +502,129 @@ export function executeHarvestDataAbsorb(sourceIndex: number, targetIndex: numbe
     `Player ${currentPlayer.id} used Harvest Data: absorbed ${absorbedTemplate.cardName} and gained ${absorbedEnergyCost} Supply.`
   );
   clearSelection();
+  renderUI();
+}
+
+// ---------------------------------------------------------------------------
+// System Shock — instant from hand or replay from Process Echo
+// ---------------------------------------------------------------------------
+
+export function executeSystemShock(target: Unit, sourceArg: CardSourceArg): void {
+  const currentPlayer = getCurrentPlayer();
+  let level: number;
+
+  if (sourceArg.source === 'hand') {
+    const sourceCard = currentPlayer.hand[sourceArg.handIndex];
+    if (!sourceCard || sourceCard.cardId !== CARD_LIBRARY.SYSTEM_SHOCK.id) {
+      clearSelection();
+      renderUI();
+      return;
+    }
+    if (currentPlayer.energy < CARD_LIBRARY.SYSTEM_SHOCK.energyCost) {
+      addLog('Not enough Energy to use System Shock.');
+      return;
+    }
+    setEnergy(currentPlayer, currentPlayer.energy - CARD_LIBRARY.SYSTEM_SHOCK.energyCost);
+    currentPlayer.hand.splice(sourceArg.handIndex, 1);
+    currentPlayer.discard.push(sourceCard);
+    level = 1;
+  } else {
+    const slot = sourceArg.slot;
+    const slotCard = currentPlayer.processEcho?.[slot as ProcessEchoSlot];
+    if (!slotCard || slotCard.cardId !== CARD_LIBRARY.SYSTEM_SHOCK.id) {
+      addLog('That Process Echo slot is empty.');
+      clearSelection();
+      renderUI();
+      return;
+    }
+    applyProcessEchoPlayResult(currentPlayer, slot as ProcessEchoSlot);
+    level = Number.parseInt(slot, 10);
+  }
+
+  const safeLevel = Math.max(1, Math.min(3, level));
+  const shockDamage = safeLevel >= 2 ? 8 : 5;
+  const targetId = target.id;
+
+  const shellGuardOutcome = applyGhostbladeShellGuard(target, shockDamage, DAMAGE_TYPES.SYSTEM);
+  target.hitPoints -= shellGuardOutcome.damage;
+  emit({
+    type: 'UNIT_DAMAGED',
+    unitId: target.id,
+    damage: shellGuardOutcome.damage,
+    newHp: target.hitPoints,
+    newShield: target.shieldHitPoints,
+    damageType: DAMAGE_TYPES.SYSTEM,
+  });
+  addLog(
+    `Player ${currentPlayer.id} cast System Shock Level ${safeLevel} on ${target.unitName} for ${shellGuardOutcome.damage} (${DAMAGE_TYPES.SYSTEM}).`,
+  );
+  if (shellGuardOutcome.consumed) {
+    addLog(`${target.unitName} Shell guard was consumed.`);
+  }
+  if (target.hitPoints <= 0) {
+    addLog(`${target.unitName} of Player ${target.owner} was destroyed.`);
+    removeUnit(target.id);
+  }
+
+  if (safeLevel >= 3 && !state.units.find((u) => u.id === targetId)) {
+    setEnergy(currentPlayer, Math.min(currentPlayer.maxEnergy, currentPlayer.energy + 10));
+    addLog(`System Shock Level 3 bonus: Player ${currentPlayer.id} gained 10 Energy.`);
+  }
+
+  clearSelection();
+  syncBoardVisualState();
+  renderUI();
+}
+
+// ---------------------------------------------------------------------------
+// Specialist EMP — area attack of zero damage that applies Stun via the
+// EMP attackType. Called once for every unit in the AoE, with cooldown +
+// energy bookkeeping centralised here.
+// ---------------------------------------------------------------------------
+
+export function executeSpecialistEmp(specialist: Unit, areaKeys: string[]): void {
+  const currentPlayer = getCurrentPlayer();
+  if (currentPlayer.energy < 5) {
+    addLog('Not enough Energy to use EMP.');
+    return;
+  }
+  const hasSalvo = hasSalvoEmpStatus(specialist);
+  const empUsesThisTurn = specialist.specialistEmpUsesThisTurn ?? 0;
+
+  setEnergy(currentPlayer, currentPlayer.energy - 5);
+  specialist.specialistEmpUsesThisTurn = empUsesThisTurn + 1;
+  if (hasSalvo) {
+    if (specialist.specialistEmpUsesThisTurn >= 2) {
+      specialist.specialistEmpCooldown = getSpecialistEmpCooldownTurns(specialist);
+      specialist.specialistEmpPendingCooldown = false;
+    } else {
+      specialist.specialistEmpPendingCooldown = true;
+    }
+  } else {
+    specialist.specialistEmpCooldown = getSpecialistEmpCooldownTurns(specialist);
+  }
+  specialist.hasAttacked = true;
+
+  const targets = state.units.filter((unit) => areaKeys.includes(toSquareKey(unit.x, unit.z)));
+  for (const unit of targets) {
+    applyUnitAttack(specialist, unit, {
+      attackType: ATTACK_TYPES.EMP,
+      damageType: DAMAGE_TYPES.ATTACK,
+      damageAmount: 0,
+      skipCoreMagnetRedirect: true,
+      skipAttackVisual: true,
+    });
+  }
+
+  addLog(
+    `${specialist.owner} Specialist used EMP on ${areaKeys.join(', ')}.` +
+      (hasSalvo ? ` (Salvo uses: ${specialist.specialistEmpUsesThisTurn}/2)` : ''),
+  );
+
+  state.mode = 'unit_selected' as string as typeof state.mode;
+  state.hoverSquareKey = null;
+  state.specialistEmpCasterId = null;
+  syncBoardVisualState();
   renderUI();
 }
 

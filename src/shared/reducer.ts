@@ -40,6 +40,8 @@ import {
   executeGhostbladeTeleport,
   executeShielding,
   executeProcessEchoStore,
+  executeSystemShock,
+  executeSpecialistEmp,
 } from '../engine/abilities.ts';
 import {
   executeArtilleryBallisticAgainstUnit,
@@ -233,8 +235,25 @@ export function applyAction(action: Action): ReduceResult | ReduceError {
       return { ok: true, events: [] };
     }
 
-    case 'PLAY_SYSTEM_SHOCK':
-    case 'SPECIALIST_EMP':
+    case 'PLAY_SYSTEM_SHOCK': {
+      const target = state.units.find((u) => u.id === action.targetUnitId);
+      if (!target) return { ok: false, error: 'unit_not_found', events: [] };
+      const sourceArg =
+        action.source === 'hand'
+          ? { source: 'hand' as const, handIndex: action.handIndex }
+          : { source: 'echo' as const, slot: action.slot };
+      executeSystemShock(target, sourceArg);
+      return { ok: true, events: [] };
+    }
+
+    case 'SPECIALIST_EMP': {
+      const specialist = state.units.find((u) => u.id === action.casterUnitId);
+      if (!specialist) return { ok: false, error: 'unit_not_found', events: [] };
+      const areaKeys = getArtilleryAreaSquareKeys(action.centerSquareKey);
+      executeSpecialistEmp(specialist, areaKeys);
+      return { ok: true, events: [] };
+    }
+
     case 'PLAY_BUILD_CARD':
     case 'CONFIRM_BUILDING_PLACEMENT':
     case 'CANCEL_BUILDING_PLACEMENT':
@@ -243,7 +262,6 @@ export function applyAction(action: Action): ReduceResult | ReduceError {
     case 'CONFIRM_BUILDING_UPGRADE':
     case 'FOUNDATION_TARGET':
     case 'FOUNDATION_CONFIRM':
-    case 'PROCESS_ECHO_STORE':
       return {
         ok: false,
         error: `Action ${action.type} not yet wired through reducer; input layer still calls engine directly.`,

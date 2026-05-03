@@ -647,6 +647,8 @@ interface Monster {
   state: MonsterState;
   attackCooldown: number;
   fireCooldown: number;          // fliers only
+  /** Frame counter for animation LOD (0 = full update this frame). */
+  _mixerSkip?: number;
   hp: number;
   maxHp: number;
   hpBar: THREE.Sprite;
@@ -706,6 +708,30 @@ async function loadCreatureTemplate(
     });
   }
 
+  // Apply material tweaks ONCE on the template — these are the same materials
+  // that all spawned instances share, which is the whole point: one shader
+  // program, one GPU upload. Cloning per-spawn (the previous approach) blew
+  // up draw calls and forced extra shader prep on every spawn.
+  for (const v of variants) {
+    v.root.traverse(c => {
+      const mesh = c as THREE.Mesh;
+      if (!mesh.isMesh || !mesh.material) return;
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      for (const mat of mats) {
+        const sm = mat as THREE.MeshStandardMaterial;
+        if (sm.opacity != null && sm.opacity < 1) sm.opacity = 1;
+        // Untextured near-white default: tint to a creature colour so it
+        // doesn't render as bright white against the asteroid.
+        if (sm.color && !sm.map && sm.color.r > 0.85 && sm.color.g > 0.85 && sm.color.b > 0.85) {
+          sm.color.setHex(label === 'flier' ? 0x6a4d8c : 0x536b3a);
+          sm.roughness = Math.max(0.7, sm.roughness ?? 0.7);
+          sm.metalness = 0;
+          sm.envMapIntensity = 0.3;
+        }
+      }
+    });
+  }
+
   const tpl: MonsterTemplate = {
     variants,
     clips: gltf.animations,
@@ -743,40 +769,13 @@ function spawnMonster(dir: THREE.Vector3, kind: MonsterKind = 'walker'): void {
   wrap.add(inst);
   wrap.scale.setScalar(variant.scale);
 
-  // Force every node visible & uncullable. Some glbs ship with hidden helper
-  // nodes or have local-space bounding boxes that don't survive skeletal
-  // animation — frustum culling then drops the mesh as the bones move it
-  // out of the original bbox. Disabling culling on monsters costs nothing
-  // (we have ≤10 of them) and guarantees they always render.
+  // Force every node visible & uncullable. Frustum culling on skinned meshes
+  // can drop the mesh when bones move outside the bind-pose bbox, causing
+  // pop-in/out during animation. Materials & textures are shared with the
+  // template (set up once in loadCreatureTemplate) — that's the perf win.
   wrap.traverse(c => {
     c.visible = true;
     c.frustumCulled = false;
-    const mesh = c as THREE.Mesh;
-    if (!mesh.isMesh || !mesh.material) return;
-
-    // Each spawn must have its own material — without cloning, materials are
-    // shared with the template and our tint below would affect every monster.
-    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-    const cloned = mats.map(m => m.clone());
-    mesh.material = Array.isArray(mesh.material) ? cloned : cloned[0];
-
-    for (const mat of cloned) {
-      const sm = mat as THREE.MeshStandardMaterial;
-      // Force opaque (some glbs ship transparent: true with opacity 1).
-      if (sm.opacity != null && sm.opacity < 1) sm.opacity = 1;
-      // If the material has no diffuse texture and is near-white (the model
-      // shipped no albedo map), tint it a sickly zombie green so it actually
-      // looks like a creature and not a paper cutout.
-      if (sm.color && !sm.map) {
-        const c0 = sm.color;
-        if (c0.r > 0.85 && c0.g > 0.85 && c0.b > 0.85) {
-          c0.setHex(0x536b3a);
-          sm.roughness = Math.max(0.7, sm.roughness ?? 0.7);
-          sm.metalness = 0;
-          sm.envMapIntensity = 0.3; // damp env reflections for non-PBR look
-        }
-      }
-    }
   });
 
   // Initial position: walkers on surface, fliers a bit above the surface.
@@ -923,7 +922,21 @@ function tickMonsters(dt: number): void {
       if (clip) m.deathAction = m.mixer.clipAction(clip);
     }
 
-    m.mixer.update(dt);
+    // Animation LOD: monsters far from the player update their skeleton at
+    // a reduced rate. Close → full 60fps animation, far → 1/4 rate. Skinned
+    // mesh skeleton math is the dominant CPU cost when there are many of them.
+    const distSq = m.position.distanceToSquared(player.position);
+    let mixerDt = dt;
+    if (distSq > 80 * 80) {
+      // very far: every 4th frame
+      m._mixerSkip = ((m._mixerSkip ?? 0) + 1) % 4;
+      mixerDt = m._mixerSkip === 0 ? dt * 4 : 0;
+    } else if (distSq > 30 * 30) {
+      // mid: every other frame
+      m._mixerSkip = ((m._mixerSkip ?? 0) + 1) % 2;
+      mixerDt = m._mixerSkip === 0 ? dt * 2 : 0;
+    }
+    if (mixerDt > 0) m.mixer.update(mixerDt);
 
     if (m.state === 'dying') {
       m.dyingTimer -= dt;
@@ -1538,7 +1551,17 @@ function animate(): void {
 
 // --- bootstrap ------------------------------------------------------------
 
-async function step(label: string, fn: () => Promise<unknown> | unknown): Promise<void> {
+// Loader overlay (shown while assets/shaders compile, hidden once the
+// first real frame is ready).
+const loaderEl = document.getElementById('loader');
+const loaderFill = document.getElementById('loader-fill');
+const loaderStep = document.getElementById('loader-step');
+
+async function step(label: string, total: number, idx: number, fn: () => Promise<unknown> | unknown): Promise<void> {
+  if (loaderStep) loaderStep.textContent = label;
+  if (loaderFill) loaderFill.style.width = `${Math.round((idx / total) * 100)}%`;
+  // give the browser a frame to paint the updated loader before the work runs
+  await new Promise<void>(r => requestAnimationFrame(() => r()));
   try {
     console.log(`[boot] ${label} ...`);
     await fn();
@@ -1549,13 +1572,31 @@ async function step(label: string, fn: () => Promise<unknown> | unknown): Promis
 }
 
 (async () => {
+  const STEPS = 7;
+  let i = 0;
   renderCredits();
-  await step('loadAsteroid', loadAsteroid);
-  await step('buildSurfaceTable', () => buildSurfaceTable());
+  await step('loading asteroid',          STEPS, ++i, loadAsteroid);
+  await step('sampling surface',          STEPS, ++i, () => buildSurfaceTable());
   player.position.set(0, asteroidBoundingRadius * 1.2, 0);
-  await step('loadAndScatterRocks', loadAndScatterRocks);
-  await step('loadMonsterTemplate', loadMonsterTemplate);
-  await step('spawnInitialMonsters', spawnInitialMonsters);
-  await step('loadWeapon', loadWeapon);
+  await step('scattering rocks',          STEPS, ++i, loadAndScatterRocks);
+  await step('loading creatures',         STEPS, ++i, loadMonsterTemplate);
+  await step('spawning monsters',         STEPS, ++i, spawnInitialMonsters);
+  await step('loading weapon',            STEPS, ++i, loadWeapon);
+  // Pre-compile every shader currently in the scene so the first render
+  // (and any subsequent monster/projectile spawn) doesn't stall while the
+  // GPU builds new programs. Without this, the first time a flier or
+  // projectile is drawn the renderer pauses noticeably.
+  await step('compiling shaders',         STEPS, ++i, async () => {
+    if (typeof renderer.compileAsync === 'function') {
+      await renderer.compileAsync(scene, camera);
+    } else {
+      renderer.compile(scene, camera);
+    }
+  });
+
+  if (loaderEl) {
+    loaderEl.style.opacity = '0';
+    setTimeout(() => loaderEl.remove(), 500);
+  }
   animate();
 })();

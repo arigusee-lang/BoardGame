@@ -6,7 +6,6 @@ import {
   getCurrentPlayer,
   getSelectedUnit,
   clearSelection,
-  toSquareKey,
   fromSquareKey,
   gridToWorld,
   getDistance,
@@ -15,11 +14,7 @@ import {
   isPlayerBaseSquare,
   canPlayerDirectlyTargetUnit
 } from '../utils.ts';
-import {
-  DAMAGE_TYPES,
-  ATTACK_TYPES,
-  BASE_ARTILLERY_FRONT_SQUARES
-} from '../constants.ts';
+import { BASE_ARTILLERY_FRONT_SQUARES } from '../constants.ts';
 import type { Building, Player, PlayerId } from '../types';
 
 interface HitUserData {
@@ -38,17 +33,12 @@ import { renderUI, syncBoardVisualState } from '../shared/events.ts';
 import { logHint } from '../ui/log.ts';
 import { dispatch } from '../actionDispatcher.ts';
 
-import { applyUnitAttack, applyBaseAttack, removeUnit, destroyBase } from '../engine/combat.ts';
 import {
-  getUnitCurrentMoveRange,
   getUnitCurrentAttackRange,
-  getUnitCurrentAttackDamage,
   unitHasStatus,
   isUnitMovementStunned,
   casterHasRepairAbility,
-  applyGhostbladeShellGuard,
   hasSalvoEmpStatus,
-  getSpecialistEmpCooldownTurns,
   hasBeaconCoreMagnet,
   getBulwarkAdjacentSquareKeys
 } from '../engine/unitStats.ts';
@@ -68,7 +58,6 @@ import {
   getBuildingDisplayName
 } from '../engine/buildings.ts';
 import {
-  getUnitWorldPosition,
   getUnitHeadWorldPosition,
   playExplosionAt,
   playSystemShockImpact,
@@ -185,71 +174,40 @@ export function handleSystemShockTargetClick(hit: HitObject, context: SystemShoc
     return;
   }
 
-  const currentPlayer = getCurrentPlayer();
-  const source = context.source ?? 'hand';
-  const safeLevel = Math.max(1, Math.min(3, context.level ?? 1));
-  if (source === 'hand') {
+  // Visual cue (client-only) — must run before the unit is potentially
+  // removed by the dispatch result.
+  const targetHead = getUnitHeadWorldPosition(target.id);
+  playSystemShockImpact(targetHead, target.id);
+
+  if (context.source === 'hand') {
     if (state.selectedCardHandIndex === null) {
       clearSelection();
       renderUI();
       return;
     }
-    const sourceCard = currentPlayer.hand[state.selectedCardHandIndex];
-    if (!sourceCard || sourceCard.cardId !== CARD_LIBRARY.SYSTEM_SHOCK.id) {
-      clearSelection();
-      renderUI();
-      return;
-    }
-    if (currentPlayer.energy < CARD_LIBRARY.SYSTEM_SHOCK.energyCost) {
-      logHint('Not enough Energy to use System Shock.');
-      return;
-    }
-    currentPlayer.energy -= CARD_LIBRARY.SYSTEM_SHOCK.energyCost;
-    currentPlayer.hand.splice(state.selectedCardHandIndex, 1);
-    currentPlayer.discard.push(sourceCard);
-  } else {
-    const slot = state.pendingSystemShockSourceSlot;
-    if (!slot) {
-      clearSelection();
-      renderUI();
-      return;
-    }
-    const slotCard = currentPlayer.processEcho?.[slot];
-    if (!slotCard || slotCard.cardId !== CARD_LIBRARY.SYSTEM_SHOCK.id) {
-      logHint('That Process Echo slot is empty.');
-      clearSelection();
-      renderUI();
-      return;
-    }
-    applyProcessEchoPlayResult(currentPlayer, slot);
+    dispatch({
+      type: 'PLAY_SYSTEM_SHOCK',
+      casterUnitId: target.id, // unused by reducer; placeholder until casterless action shape lands
+      targetUnitId: target.id,
+      source: 'hand',
+      handIndex: state.selectedCardHandIndex,
+    });
+    return;
   }
 
-  const shockDamage = safeLevel >= 2 ? 8 : 5;
-  const targetId = target.id;
-  const targetHead = getUnitHeadWorldPosition(target.id);
-  const targetPos = getUnitWorldPosition(target.id);
-
-  playSystemShockImpact(targetHead, target.id);
-  const shellGuardOutcome = applyGhostbladeShellGuard(target, shockDamage, DAMAGE_TYPES.SYSTEM);
-  target.hitPoints -= shellGuardOutcome.damage;
-  logHint(`Player ${currentPlayer.id} cast System Shock Level ${safeLevel} on ${target.unitName} for ${shellGuardOutcome.damage} (${DAMAGE_TYPES.SYSTEM}).`);
-  if (shellGuardOutcome.consumed) {
-    logHint(`${target.unitName} Shell guard was consumed.`);
+  const slot = state.pendingSystemShockSourceSlot;
+  if (!slot) {
+    clearSelection();
+    renderUI();
+    return;
   }
-  if (target.hitPoints <= 0) {
-    logHint(`${target.unitName} of Player ${target.owner} was destroyed.`);
-    playExplosionAt(targetPos);
-    removeUnit(target.id);
-  }
-
-  if (safeLevel >= 3 && !getUnitById(targetId)) {
-    currentPlayer.energy = Math.min(getPlayerMaxEnergy(currentPlayer), currentPlayer.energy + 10);
-    logHint(`System Shock Level 3 bonus: Player ${currentPlayer.id} gained 10 Energy.`);
-  }
-
-  clearSelection();
-  syncBoardVisualState();
-  renderUI();
+  dispatch({
+    type: 'PLAY_SYSTEM_SHOCK',
+    casterUnitId: target.id,
+    targetUnitId: target.id,
+    source: 'echo',
+    slot: slot as '1' | '2' | '3',
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -658,30 +616,7 @@ export function handleSpecialistEmpTargetClick(hit: HitObject): void {
     return;
   }
 
-  currentPlayer.energy -= 5;
-  specialist.specialistEmpUsesThisTurn = empUsesThisTurn + 1;
-  if (hasSalvo) {
-    if (specialist.specialistEmpUsesThisTurn >= 2) {
-      specialist.specialistEmpCooldown = getSpecialistEmpCooldownTurns(specialist);
-      specialist.specialistEmpPendingCooldown = false;
-    } else {
-      specialist.specialistEmpPendingCooldown = true;
-    }
-  } else {
-    specialist.specialistEmpCooldown = getSpecialistEmpCooldownTurns(specialist);
-  }
-  specialist.hasAttacked = true;
-
-  const targets = state.units.filter((unit) => areaKeys.includes(toSquareKey(unit.x, unit.z)));
-  for (const unit of targets) {
-    applyUnitAttack(specialist, unit, {
-      attackType: ATTACK_TYPES.EMP,
-      damageType: DAMAGE_TYPES.ATTACK,
-      damageAmount: 0,
-      skipCoreMagnetRedirect: true,
-      skipAttackVisual: true
-    });
-  }
+  // Visual cue (client-only)
   const center = new THREE.Vector3();
   for (const key of areaKeys) {
     center.add(gridToWorld(fromSquareKey(key).x, fromSquareKey(key).z));
@@ -693,15 +628,12 @@ export function handleSpecialistEmpTargetClick(hit: HitObject): void {
     speedMin: 1.0,
     speedMax: 2.2
   });
-  logHint(
-    `${specialist.owner} Specialist used EMP on ${areaKeys.join(', ')}.` +
-      (hasSalvo ? ` (Salvo uses: ${specialist.specialistEmpUsesThisTurn}/2)` : '')
-  );
-  state.mode = 'unit_selected';
-  state.hoverSquareKey = null;
-  state.specialistEmpCasterId = null;
-  syncBoardVisualState();
-  renderUI();
+
+  dispatch({
+    type: 'SPECIALIST_EMP',
+    casterUnitId: specialist.id,
+    centerSquareKey: hit.userData.squareKey!,
+  });
 }
 
 // ---------------------------------------------------------------------------
