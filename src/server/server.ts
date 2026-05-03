@@ -3,11 +3,17 @@
  *
  * Run with `bun run src/server/server.ts`.
  *
- * Stage B scope: connection lifecycle, room management, heartbeat. The
- * 'action' message type is acknowledged but does not yet drive game logic
- * — that wiring lands in Stage C together with client integration.
+ * Two roles in one process:
+ *   1. WebSocket gameplay (/ws) — room lifecycle + reducer action handling
+ *      + state broadcast.
+ *   2. Static file server — when DIST_DIR exists (Cloud Run / preview),
+ *      serve the built Vite bundle on every non-/ws, non-/healthz path so
+ *      the same hostname hosts both client and server. In dev we don't
+ *      build the bundle, Vite serves it on its own port.
  */
 
+import { join, normalize } from 'node:path';
+import { existsSync, statSync } from 'node:fs';
 import { RoomManager } from './roomManager.ts';
 import type { WsData } from './room.ts';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.ts';
@@ -23,6 +29,73 @@ registerServerEngineDeps();
 
 const PORT = Number(process.env.PORT ?? 3001);
 const HEARTBEAT_INTERVAL_MS = 25_000;
+
+// In production we ship `dist/` next to the server bundle (built by
+// `vite build` in the Dockerfile) and serve it on the same port as /ws.
+// In dev DIST_DIR doesn't exist and Vite serves the bundle on 5173.
+const DIST_DIR = process.env.DIST_DIR ?? 'dist';
+const HAS_DIST = existsSync(DIST_DIR);
+if (HAS_DIST) {
+  console.log(`[server] static files: ${DIST_DIR}`);
+} else {
+  console.log(`[server] no dist/ — running in API-only mode (use Vite for the client)`);
+}
+
+const MIME: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.glb': 'model/gltf-binary',
+  '.gltf': 'model/gltf+json',
+  '.wasm': 'application/wasm',
+  '.map': 'application/json; charset=utf-8',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+};
+
+function serveStatic(pathname: string): Response | null {
+  if (!HAS_DIST) return null;
+
+  // Resolve URL → file path inside dist/. Trailing slash → index.html.
+  // Path traversal protection: normalize and ensure result stays under DIST_DIR.
+  let rel = pathname.replace(/^\/+/, '');
+  if (rel === '' || rel.endsWith('/')) rel = `${rel}index.html`;
+  const candidate = normalize(join(DIST_DIR, rel));
+  if (!candidate.startsWith(normalize(DIST_DIR))) return new Response('Forbidden', { status: 403 });
+
+  let target = candidate;
+  if (existsSync(target) && statSync(target).isDirectory()) {
+    target = join(target, 'index.html');
+  }
+  if (!existsSync(target) || !statSync(target).isFile()) {
+    // SPA fallback for the main game: any unknown path under / serves /index.html
+    // so client-side routing works. Sandbox is a flat single-page so we don't
+    // do SPA fallback under /sandbox — a 404 is more useful there.
+    if (pathname.startsWith('/sandbox')) return new Response('Not Found', { status: 404 });
+    target = join(DIST_DIR, 'index.html');
+    if (!existsSync(target)) return new Response('Not Found', { status: 404 });
+  }
+
+  const ext = target.slice(target.lastIndexOf('.')).toLowerCase();
+  const contentType = MIME[ext] ?? 'application/octet-stream';
+  // Hashed assets get aggressive caching; HTML/JSON stay fresh.
+  const isAsset = /\.(js|mjs|css|woff2?|png|jpg|jpeg|webp|svg|glb|gltf)$/i.test(target)
+    && /-[A-Za-z0-9_-]{8,}\./i.test(target);
+  const cacheControl = isAsset
+    ? 'public, max-age=31536000, immutable'
+    : 'no-cache';
+  return new Response(Bun.file(target), {
+    headers: { 'Content-Type': contentType, 'Cache-Control': cacheControl },
+  });
+}
 
 const roomManager = new RoomManager();
 roomManager.start();
@@ -48,7 +121,7 @@ const server = Bun.serve<WsData, never>({
       });
     }
 
-    // Upgrade WebSocket connections at /ws (anything else returns 404)
+    // Upgrade WebSocket connections at /ws
     if (url.pathname === '/ws') {
       const upgraded = server.upgrade(req, {
         data: {
@@ -62,6 +135,10 @@ const server = Bun.serve<WsData, never>({
       }
       return undefined;
     }
+
+    // Anything else: try the static file server (Vite-built dist/ in prod).
+    const staticResponse = serveStatic(url.pathname);
+    if (staticResponse) return staticResponse;
 
     return new Response('Not Found', { status: 404 });
   },

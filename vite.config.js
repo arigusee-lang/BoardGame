@@ -1,4 +1,8 @@
 import { defineConfig } from 'vite';
+import { resolve } from 'path';
+import { fileURLToPath } from 'url';
+
+const root = resolve(fileURLToPath(import.meta.url), '..');
 
 export default defineConfig({
   build: {
@@ -7,6 +11,13 @@ export default defineConfig({
     sourcemap: true,
     chunkSizeWarningLimit: 600,
     rollupOptions: {
+      // Two entry points so the production bundle ships both the main game
+      // (dist/index.html) and the standalone sandbox (dist/sandbox/index.html).
+      // The Bun server serves both alongside /ws on the same hostname.
+      input: {
+        main: resolve(root, 'index.html'),
+        sandbox: resolve(root, 'sandbox/index.html'),
+      },
       output: {
         manualChunks(id) {
           if (id.includes('node_modules/three')) {

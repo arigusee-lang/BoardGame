@@ -22,13 +22,19 @@ import { applyPlayerRoster, setMyPlayerId, setPlayerName } from '../playerNames.
 // ---------------------------------------------------------------------------
 
 function resolveServerUrl(): string {
-  const fromEnv = (import.meta as { env?: { VITE_SERVER_URL?: string } }).env?.VITE_SERVER_URL;
-  if (fromEnv) return fromEnv;
-  // Default: same host as the client, ws path /ws, port 3001.
-  // For Cloud Run with combined client+server we'll point this elsewhere.
+  const env = (import.meta as { env?: { VITE_SERVER_URL?: string; DEV?: boolean } }).env ?? {};
+  if (env.VITE_SERVER_URL) return env.VITE_SERVER_URL;
+
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const host = location.hostname || 'localhost';
-  return `${proto}//${host}:3001/ws`;
+
+  // Dev (Vite on 5173) → talk to the standalone Bun server on :3001.
+  // Prod (Cloud Run) → Bun serves both static and /ws on the same origin,
+  // so we use location.host (includes port if any) and skip the explicit :3001.
+  if (env.DEV) {
+    const host = location.hostname || 'localhost';
+    return `${proto}//${host}:3001/ws`;
+  }
+  return `${proto}//${location.host}/ws`;
 }
 
 const SERVER_URL = resolveServerUrl();
