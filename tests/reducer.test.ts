@@ -25,14 +25,14 @@ describe('reducer', () => {
   test('MOVE_UNIT rejects when unit not found', () => {
     freshGame();
     startGame();
-    const result = applyAction({ type: 'MOVE_UNIT', unitId: 'no-such-id', targetSquareKey: '1,4' });
+    const result = applyAction({ type: 'MOVE_UNIT', unitId: 'no-such-id', targetSquareKey: 'B4' });
     expect(result.ok).toBe(false);
   });
 
   test('PLAY_UNIT_CARD rejects when card not in hand', () => {
     freshGame();
     startGame();
-    const result = applyAction({ type: 'PLAY_UNIT_CARD', handIndex: 999, targetSquareKey: '1,3' });
+    const result = applyAction({ type: 'PLAY_UNIT_CARD', handIndex: 999, targetSquareKey: 'B3' });
     expect(result.ok).toBe(false);
   });
 
@@ -57,7 +57,7 @@ describe('reducer', () => {
     const result = applyAction({
       type: 'PLAY_UNIT_CARD',
       handIndex,
-      targetSquareKey: '1,3',
+      targetSquareKey: 'B3',
     });
     expect(result.ok).toBe(true);
     expect(state.players.A.energy).toBe(energyBefore - tpl.energyCost);
@@ -69,10 +69,12 @@ describe('reducer', () => {
   test('ATTACK_UNIT routes through reducer and damages the target', () => {
     const state = freshGame();
     startGame();
-    summonUnit('A', '1,3', 'PAWN_DRONE_UNIT');
-    summonUnit('B', '1,4', 'PAWN_DRONE_UNIT');
+    summonUnit('A', 'B3', 'PAWN_DRONE_UNIT');
+    summonUnit('B', 'B16', 'PAWN_DRONE_UNIT');
     const a = findUnit(state, 'A', 'PAWN_DRONE_UNIT');
     const b = findUnit(state, 'B', 'PAWN_DRONE_UNIT');
+    a.x = 1; a.z = 8;
+    b.x = 1; b.z = 9;
     const beforeHp = b.hitPoints;
     const result = applyAction({ type: 'ATTACK_UNIT', attackerId: a.id, targetUnitId: b.id });
     expect(result.ok).toBe(true);
