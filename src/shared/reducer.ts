@@ -38,6 +38,7 @@ import {
   applyShimmeringCloakSelection,
   executeHarvestDataAbsorb,
   executeGhostbladeTeleport,
+  executeShielding,
 } from '../engine/abilities.ts';
 import {
   executeArtilleryBallisticAgainstUnit,
@@ -215,8 +216,18 @@ export function applyAction(action: Action): ReduceResult | ReduceError {
       return { ok: true, events: [] };
     }
 
+    case 'PLAY_SHIELDING': {
+      const target = state.units.find((u) => u.id === action.targetUnitId);
+      if (!target) return { ok: false, error: 'unit_not_found', events: [] };
+      const sourceArg =
+        action.source === 'hand'
+          ? { source: 'hand' as const, handIndex: action.handIndex }
+          : { source: 'echo' as const, slot: action.slot };
+      executeShielding(target, sourceArg);
+      return { ok: true, events: [] };
+    }
+
     case 'PLAY_SYSTEM_SHOCK':
-    case 'PLAY_SHIELDING':
     case 'PLAY_HARVEST_DATA_STORE':
     case 'SPECIALIST_EMP':
     case 'PLAY_BUILD_CARD':

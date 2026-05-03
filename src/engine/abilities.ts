@@ -357,6 +357,48 @@ export function applyShieldingEffectToUnit(unit: Unit, level: number): void {
 }
 
 // ---------------------------------------------------------------------------
+// Shielding (instant from hand or echo replay)
+// ---------------------------------------------------------------------------
+
+export type CardSourceArg =
+  | { source: 'hand'; handIndex: number }
+  | { source: 'echo'; slot: '1' | '2' | '3' };
+
+export function executeShielding(unit: Unit, sourceArg: CardSourceArg): void {
+  const currentPlayer = getCurrentPlayer();
+  if (sourceArg.source === 'hand') {
+    const sourceCard = currentPlayer.hand[sourceArg.handIndex];
+    if (!sourceCard || sourceCard.cardId !== CARD_LIBRARY.SHIELDING.id) {
+      clearSelection();
+      renderUI();
+      return;
+    }
+    const cardTemplate = CARD_LIBRARY.SHIELDING;
+    if (currentPlayer.energy < cardTemplate.energyCost) {
+      addLog(`Not enough Energy to play ${cardTemplate.cardName}.`);
+      return;
+    }
+    setEnergy(currentPlayer, currentPlayer.energy - cardTemplate.energyCost);
+    currentPlayer.hand.splice(sourceArg.handIndex, 1);
+    currentPlayer.discard.push(sourceCard);
+    applyShieldingEffectToUnit(unit, 1);
+    return;
+  }
+
+  const slot = sourceArg.slot;
+  const slotCard = currentPlayer.processEcho?.[slot as ProcessEchoSlot];
+  if (!slotCard || slotCard.cardId !== CARD_LIBRARY.SHIELDING.id) {
+    addLog('That Process Echo slot is empty.');
+    clearSelection();
+    renderUI();
+    return;
+  }
+  const level = state.pendingShieldingLevel ?? 1;
+  applyProcessEchoPlayResult(currentPlayer, slot as ProcessEchoSlot);
+  applyShieldingEffectToUnit(unit, level);
+}
+
+// ---------------------------------------------------------------------------
 // Shimmering Cloak selection
 // ---------------------------------------------------------------------------
 

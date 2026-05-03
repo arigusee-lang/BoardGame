@@ -280,48 +280,33 @@ export function handleShieldingTargetClick(hit: HitObject): void {
   }
 
   if (state.mode === 'shielding_equip_instant') {
-    const currentPlayer = getCurrentPlayer();
     if (state.selectedCardHandIndex === null) {
       clearSelection();
       renderUI();
       return;
     }
-    const sourceCard = currentPlayer.hand[state.selectedCardHandIndex];
-    if (!sourceCard || sourceCard.cardId !== CARD_LIBRARY.SHIELDING.id) {
-      clearSelection();
-      renderUI();
-      return;
-    }
-    const cardTemplate = CARD_LIBRARY.SHIELDING;
-    if (currentPlayer.energy < cardTemplate.energyCost) {
-      logHint(`Not enough Energy to play ${cardTemplate.cardName}.`);
-      return;
-    }
-    currentPlayer.energy -= cardTemplate.energyCost;
-    currentPlayer.hand.splice(state.selectedCardHandIndex, 1);
-    currentPlayer.discard.push(sourceCard);
-    applyShieldingEffectToUnit(unit, 1);
+    dispatch({
+      type: 'PLAY_SHIELDING',
+      targetUnitId: unit.id,
+      source: 'hand',
+      handIndex: state.selectedCardHandIndex,
+    });
     return;
   }
 
   if (state.mode === 'shielding_equip_echo') {
-    const currentPlayer = getCurrentPlayer();
     const slot = state.pendingShieldingSourceSlot;
-    const level = state.pendingShieldingLevel;
-    if (!slot || !level) {
+    if (!slot) {
       clearSelection();
       renderUI();
       return;
     }
-    const slotCard = currentPlayer.processEcho?.[slot];
-    if (!slotCard || slotCard.cardId !== CARD_LIBRARY.SHIELDING.id) {
-      logHint('That Process Echo slot is empty.');
-      clearSelection();
-      renderUI();
-      return;
-    }
-    applyProcessEchoPlayResult(currentPlayer, slot);
-    applyShieldingEffectToUnit(unit, level);
+    dispatch({
+      type: 'PLAY_SHIELDING',
+      targetUnitId: unit.id,
+      source: 'echo',
+      slot: slot as '1' | '2' | '3',
+    });
   }
 }
 
