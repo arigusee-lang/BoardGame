@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { gridToWorld } from './coords.ts';
 import type { PlayerId, UnitVisual } from '../types';
 import type { ExtendedUnitVisual } from './unitVisuals';
 import {
@@ -18,7 +19,6 @@ import {
   toSquareKey,
   fromSquareKey,
   isInsideBoard,
-  gridToWorld,
   getDistance,
   getBaseOwnerAtSquare,
   isSquareWalkable,

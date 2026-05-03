@@ -7,13 +7,13 @@ import {
   getSelectedUnit,
   clearSelection,
   fromSquareKey,
-  gridToWorld,
   getDistance,
   getBuildingAtSquare,
   getBaseOwnerAtSquare,
   isPlayerBaseSquare,
   canPlayerDirectlyTargetUnit
 } from '../utils.ts';
+import { gridToWorld } from '../three/coords.ts';
 import { BASE_ARTILLERY_FRONT_SQUARES } from '../constants.ts';
 import type { PlayerId } from '../types';
 

@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { DRONE_STATUS_LIBRARY } from '../data/statusLibrary.ts';
 import { state } from '../state.ts';
-import { gridToWorld, getDistance, getBaseCenterSquare } from '../utils.ts';
+import { getDistance, getBaseCenterSquare } from '../utils.ts';
+import { gridToWorld } from './coords.ts';
 import { unitHasStatus, isUnitMovementStunned, isTangoGhostbladeArmed } from '../engine/unitStats.ts';
 import { getUnitStatusBadgeSymbol, getUnitStatusBadgeTexture } from './textures.ts';
 import type { Unit, PlayerId, StatusId, StatusInstance } from '../types';

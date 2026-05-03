@@ -1,6 +1,5 @@
-import * as THREE from 'three';
 import type { PlayerId, Unit, Building, BuildingType, Player, ShimmeringCloak } from './types';
-import { BOARD_WIDTH, BOARD_LENGTH, WIDTH_LABELS, TILE_SIZE, BASE_SQUARES } from './constants';
+import { BOARD_WIDTH, BOARD_LENGTH, WIDTH_LABELS, BASE_SQUARES } from './constants';
 import { BUILD_CARD_LIBRARY } from './data/cardLibrary';
 import { state } from './state';
 
@@ -30,11 +29,8 @@ export function isInsideBoard(x: number, z: number): boolean {
   return x >= 0 && x < BOARD_WIDTH && z >= 0 && z < BOARD_LENGTH;
 }
 
-export function gridToWorld(x: number, z: number): THREE.Vector3 {
-  const worldX = (x - (BOARD_WIDTH - 1) / 2) * TILE_SIZE;
-  const worldZ = (z - (BOARD_LENGTH - 1) / 2) * TILE_SIZE;
-  return new THREE.Vector3(worldX, 0, worldZ);
-}
+// gridToWorld lives in three/coords.ts (it returns a THREE.Vector3 so we
+// can't host it here without dragging Three into every engine module).
 
 export function getDistance(x1: number, z1: number, x2: number, z2: number): number {
   return Math.max(Math.abs(x1 - x2), Math.abs(z1 - z2));

@@ -30,8 +30,8 @@ const JUMP_SPEED = 9;
 const MOUSE_SENS = 0.0022;
 const PITCH_LIMIT = Math.PI / 2 - 0.05;
 const ROCK_COUNT = 50;
-const MONSTER_INITIAL = 6;
-const MONSTER_MAX_ALIVE = 50;
+const MONSTER_INITIAL = 0;          // monsters disabled while we tune the weapon
+const MONSTER_MAX_ALIVE = 0;
 const MONSTER_SPAWN_INTERVAL = 6.0;     // seconds between trickle spawns
 const MONSTER_SPAWN_PLAYER_DOT = 0.6;   // reject spawn dirs within ~53° of player view (avoid pop-in)
 const MONSTER_SPEED = 2.2;       // m/s along the surface (walkers)
@@ -1157,28 +1157,121 @@ async function loadWeapon(): Promise<void> {
     ? targetSize / rifleMaxDim
     : targetSize / (Math.max(size.x, size.y, size.z) || 1);
 
-  // Centre the rig on the wrap origin. In bind-pose the bbox-centre falls
-  // somewhere in the middle of the figure, but in idle-pose the rifle ends
-  // up offset from there (typically held forward+up of the body's centre).
-  // We compensate via wrap.position — moving the wrap UP brings the rifle
-  // into the camera's view.
-  inner.position.set(-center.x, -center.y, -center.z);
+  // We need the rifle's IDLE-pose centre (not the bind-pose bbox centre) as
+  // the centering anchor — otherwise scaling drags the rifle on screen
+  // because the skinning offset between bind and idle is multiplied by scale.
+  // To get idle-pose vertex world positions we'll set up animations now,
+  // play idle for a moment, then sample.
+
+  // Pull animations forward — we need them for the temp mixer below.
+  const clips = gltf.animations;
+
+  // Locate the rifle SkinnedMesh.
+  let rifleMesh: THREE.SkinnedMesh | null = null;
+  inner.traverse(c => {
+    if (rifleMesh) return;
+    const m = c as THREE.Mesh;
+    if (!m.isMesh || !m.geometry) return;
+    const matName = (m.material as { name?: string } | null)?.name ?? '';
+    if (/rifle|main_|vector|akm|m4/i.test(`${m.name} ${matName}`)) {
+      if ((m as unknown as THREE.SkinnedMesh).isSkinnedMesh) {
+        rifleMesh = m as unknown as THREE.SkinnedMesh;
+      } else if (!rifleMesh) {
+        // fall back to the regular mesh — applyBoneTransform won't work but
+        // bbox-centre is at least better than the whole-rig centre.
+      }
+    }
+  });
+
+  // Pre-roll idle animation for one frame so applyBoneTransform reads the
+  // animated pose. Mixer is created here briefly; the real one is set up
+  // again below so the actual game's animation timing isn't affected.
+  let anchor = center.clone();
+  if (rifleMesh) {
+    const rm = rifleMesh as THREE.SkinnedMesh;
+    const idleClipTmp = clips.find(c => /idle|rest/i.test(c.name)) ?? clips[0];
+    if (idleClipTmp) {
+      const tmpMixer = new THREE.AnimationMixer(inner);
+      const tmpAction = tmpMixer.clipAction(idleClipTmp);
+      tmpAction.play();
+      tmpMixer.update(0.4); // settle into idle
+      inner.updateMatrixWorld(true);
+
+      // Sample the bbox-centre of the rifle in skinned (idle) pose.
+      if (!rm.geometry.boundingBox) rm.geometry.computeBoundingBox();
+      const b = rm.geometry.boundingBox;
+      if (b) {
+        // Average a handful of vertices in the rifle to estimate the
+        // rendered centre after skinning.
+        const pos = rm.geometry.attributes.position as THREE.BufferAttribute;
+        const n = Math.min(64, pos.count);
+        const acc = new THREE.Vector3();
+        const tmp = new THREE.Vector3();
+        for (let i = 0; i < n; i++) {
+          const idx = Math.floor((i / n) * pos.count);
+          tmp.fromBufferAttribute(pos, idx);
+          rm.applyBoneTransform(idx, tmp);
+          tmp.applyMatrix4(rm.matrixWorld);
+          acc.add(tmp);
+        }
+        anchor.copy(acc.divideScalar(n));
+      }
+      tmpMixer.stopAllAction();
+    }
+  }
+  inner.position.set(-anchor.x, -anchor.y, -anchor.z);
+
   const wrap = new THREE.Group();
   wrap.add(inner);
 
+  // With idle-pose-corrected anchor above, the rifle should sit roughly at
+  // the wrap origin in inner-local space — so wrap.position is a clean
+  // camera-local offset that no longer gets dragged when scaling.
   wrap.scale.setScalar(scale);
   wrap.rotation.set(0, Math.PI, 0);
-  // Empirically tuned to put the held rifle in the lower-right of view
-  // for the Cransh "FPS hands rifle pack". If still off, adjust Y/Z.
-  wrap.position.set(0, 0.45, -0.50);
+  wrap.position.set(0.10, 0.0, -0.45);
   wrap.traverse(c => {
     c.visible = true;
     c.frustumCulled = false;
   });
   camera.add(wrap);
 
-  // animations
-  const clips = gltf.animations;
+  // ---- live tune ----
+  // T/G — Y up/down,  F/H — X left/right,  Y/U — Z forward/back
+  // +/- — scale up/down,  P — print current values
+  // Default step sizes are now BIGGER (rig is large in scaled units).
+  // Hold Shift for ×4 jumps; hold Ctrl for ÷4 fine adjustments.
+  const TUNE_STEP = 0.5;
+  const TUNE_SCALE_FACTOR = 1.20;
+  let baseScale = scale;
+  window.addEventListener('keydown', (e) => {
+    if (!weapon || !wrap) return;
+    const mul = e.shiftKey ? 4 : (e.ctrlKey ? 0.25 : 1);
+    const dPos = TUNE_STEP * mul;
+    const dScale = e.shiftKey ? Math.pow(TUNE_SCALE_FACTOR, 4)
+                  : e.ctrlKey  ? Math.pow(TUNE_SCALE_FACTOR, 0.25)
+                  : TUNE_SCALE_FACTOR;
+    let acted = true;
+    switch (e.code) {
+      case 'KeyT': wrap.position.y += dPos; break;
+      case 'KeyG': wrap.position.y -= dPos; break;
+      case 'KeyF': wrap.position.x -= dPos; break;
+      case 'KeyH': wrap.position.x += dPos; break;
+      case 'KeyY': wrap.position.z -= dPos; break;
+      case 'KeyU': wrap.position.z += dPos; break;
+      case 'Equal': case 'NumpadAdd':
+        baseScale *= dScale; wrap.scale.setScalar(baseScale); break;
+      case 'Minus': case 'NumpadSubtract':
+        baseScale /= dScale; wrap.scale.setScalar(baseScale); break;
+      case 'KeyP':
+        console.log(`[weapon-tune] pos=(${wrap.position.x.toFixed(3)}, ${wrap.position.y.toFixed(3)}, ${wrap.position.z.toFixed(3)}) scale=${baseScale.toFixed(4)}`);
+        break;
+      default: acted = false;
+    }
+    if (acted) e.preventDefault();
+  });
+
+  // animations (clips already pulled above for the idle-anchor sampler)
   const mixer = clips.length > 0 ? new THREE.AnimationMixer(inner) : null;
 
   // Pick clips by name. The Cransh pack uses "Arms_FPS_Anim_<Action>" naming

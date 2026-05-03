@@ -19,7 +19,7 @@ import {
   playSupplyHarvestCoins,
   flashSupplyHarvested,
 } from '../three/effects.ts';
-import { gridToWorld } from '../utils.ts';
+import { gridToWorld } from '../three/coords.ts';
 
 export const effectEventHandlers = {
   EFFECT_RIFLE_SHOT: ((e) => {

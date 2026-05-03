@@ -7,7 +7,8 @@ import type { Player } from '../types.ts';
 import { state } from '../state.ts';
 import { buildingVisualsById, boardGroup } from '../visualState.ts';
 import { createBuildingVisual } from '../three/buildingVisuals.ts';
-import { fromSquareKey, gridToWorld } from '../utils.ts';
+import { fromSquareKey } from '../utils.ts';
+import { gridToWorld } from '../three/coords.ts';
 
 function findBuildingOwner(buildingId: string): Player | null {
   for (const playerId of ['A', 'B'] as const) {

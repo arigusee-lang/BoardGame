@@ -13,7 +13,7 @@ import { state } from '../state.ts';
 import { startUnitMoveAnimation } from '../three/animation.ts';
 import { unitVisualsById, boardGroup, clickableMeshes } from '../visualState.ts';
 import { createUnitVisual } from '../three/unitVisuals.ts';
-import { gridToWorld } from '../utils.ts';
+import { gridToWorld } from '../three/coords.ts';
 import { playHitEffect } from '../three/effects.ts';
 
 function findUnit(unitId: string) {
