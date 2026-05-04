@@ -72,6 +72,35 @@ const QUERIES: Query[] = [
   { slug: 'flier',      query: 'wyvern animated',           maxFaces: 8000, animated: true,
                         preferUid: 'b3b83f40265347dd90e4666c3e2a843c' },
 
+  // 360° HDRI skydome (space nebula) — the sphere itself is trivially low-poly,
+  // the asset weight is in the panoramic texture. Used as an alternate sky in
+  // the sandbox (toggle with `B`).
+  { slug: 'skydome',  query: 'space nebula HDRI panorama 360 skydome', maxFaces: 200000,
+                      preferUid: '255203215c394bdb947c718b46515120' },
+
+  // Plasma projectile model used in place of a plain white sphere when fliers fire.
+  { slug: 'projectile', query: 'astro projectile',                    maxFaces: 30000,
+                        preferUid: 'fea1d82dcd524373b6971a19b2450b07' },
+
+  // Ambient creatures populating the SECOND asteroid. Single looping clip
+  // (Take 001) plays continuously while they hover.
+  { slug: 'eyebeast',   query: 'eyebeast animated',                    maxFaces: 60000, animated: true,
+                        preferUid: 'b458af2e4e6f4c61849ad4e1d69e89b1' },
+
+  // Spider-thing walkers on the SECOND asteroid (chase + attack). Clips:
+  //   subjectAction  — walk/run loop
+  //   ArmatureAction — attack lunge
+  { slug: 'spider',       query: 'spiderthing take 3',                  maxFaces: 80000, animated: true,
+                          preferUid: '10bb4cf49d304d64afd2b829666f6caf' },
+
+  // Third (purely decorative) asteroid orbiting in the player's sky — Toutatis.
+  { slug: 'asteroid_far', query: 'toutatis asteroid earth impactor',    maxFaces: 80000,
+                          preferUid: '5446cb4764674e49a5e4eda95ed497dc' },
+
+  // Hostile creature populating the THIRD asteroid. Clips: Idle / Run / Attack1 / Die.
+  { slug: 'tribrute',     query: 'monster',                             maxFaces: 80000, animated: true,
+                          preferUid: '71cc330a586441d985a95c08bea6a510' },
+
   // (kept for potential future reuse, but the minimal scene only needs the three above)
   { slug: 'tree',     query: 'low poly tree',           maxFaces: 8000, excludeUids: EXCLUDE_TREE },
   { slug: 'mushroom', query: 'low poly mushroom',       maxFaces: 6000 },
@@ -205,9 +234,21 @@ async function main() {
       continue;
     }
 
-    console.log(`[search] "${q.query}"${q.animated ? ' (animated)' : ''}`);
-    const results = await search(q.query, q.animated);
-    const picked = pick(results, q);
+    let picked: SearchResult | null = null;
+    // preferUid is authoritative: hit the model endpoint directly so we
+    // never accidentally pick something else just because the chosen model
+    // isn't in the search top-likes (the previous behaviour grabbed a
+    // random "Flying Dragon" instead of the Lizardmon).
+    if (q.preferUid) {
+      console.log(`[direct] ${q.preferUid}`);
+      picked = await fetchModelByUid(q.preferUid);
+      if (picked) console.log(`  picked (direct): ${picked.name}`);
+    }
+    if (!picked) {
+      console.log(`[search] "${q.query}"${q.animated ? ' (animated)' : ''}`);
+      const results = await search(q.query, q.animated);
+      picked = pick(results, q);
+    }
     if (!picked) {
       console.warn(`  no match for "${q.query}"`);
       continue;
