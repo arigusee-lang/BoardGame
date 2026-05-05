@@ -3,8 +3,7 @@ import { TURN_DRAW_COUNT, SUPPLY_HARVEST_SQUARES, SUPPLY_HARVEST_REWARD } from '
 import { DRONE_STATUS_LIBRARY } from '../data/statusLibrary.ts';
 import { state, createEmptyProcessEcho } from '../state.ts';
 import { shuffle, toSquareKey, getCurrentPlayer } from '../utils.ts';
-import { renderUI, syncBoardVisualState } from '../bridge.ts';
-import { addLog } from '../ui/log.ts';
+import { renderUI, syncBoardVisualState, addLog } from '../shared/events.ts';
 import {
   unitHasStatus,
   hasBeaconCoreMagnet,
@@ -12,6 +11,7 @@ import {
   awardSupplyFromDrone,
   tickShimmeringCloaksForPlayer
 } from './unitStats.ts';
+import { setEnergy } from './playerResources.ts';
 
 // ---------------------------------------------------------------------------
 // Late-bound imports (functions still in main.js or future modules)
@@ -95,7 +95,7 @@ export function startTurn(playerId: PlayerId): void {
   player.turnCounter = (player.turnCounter ?? 0) + 1;
   player.processEchoPlayedThisTurn = false;
   tickShimmeringCloaksForPlayer(playerId);
-  player.energy = playerMaxEnergy;
+  setEnergy(player, playerMaxEnergy);
   player.buildingsPlayedThisTurn = 0;
   for (const building of player.buildings) {
     if (building.createTankDroneCooldown > 0) {

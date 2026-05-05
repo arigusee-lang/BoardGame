@@ -1,15 +1,20 @@
-import type { Unit, StatusId } from '../types';
-import { BOARD_WIDTH, BOARD_LENGTH } from '../constants.ts';
+import type { Unit, PlayerId, StatusId } from '../types';
+import { BOARD_WIDTH, BOARD_LENGTH, DAMAGE_TYPES, BASE_ARTILLERY_FRONT_SQUARES } from '../constants.ts';
 import { DRONE_STATUS_LIBRARY } from '../data/statusLibrary.ts';
+import { state } from '../state.ts';
 import {
   toSquareKey,
   fromSquareKey,
-  getDistance
+  getDistance,
+  getCurrentPlayer
 } from '../utils.ts';
 import {
   unitHasStatus,
-  getUnitCurrentAttackDamage
+  getUnitCurrentAttackDamage,
+  getUnitCurrentMoveRange
 } from './unitStats.ts';
+import { applyUnitAttack, applyBaseAttack, destroyBase } from './combat.ts';
+import { addLog, emit } from '../shared/events.ts';
 
 // ---------------------------------------------------------------------------
 // Artillery area helpers
@@ -127,4 +132,152 @@ export function getMinDistanceToAreaFromUnit(unitX: number, unitZ: number, areaK
     }
   }
   return minDistance;
+}
+
+// ---------------------------------------------------------------------------
+// Execute artillery — extracted from inputTargeting so the input layer no
+// longer mutates artillery flags or base HP directly.
+//
+// All four functions assume validation has already happened upstream
+// (range, target legitimacy, mode-status compatibility).
+// ---------------------------------------------------------------------------
+
+function markArtilleryFired(artillery: Unit): void {
+  artillery.hasAttacked = true;
+  artillery.hasMoved = true;
+  artillery.movementUsedThisTurn = getUnitCurrentMoveRange(artillery);
+}
+
+/** Damage applied to a base via vulnerable-square hits in gauss/area mode.
+ *  Different from applyBaseAttack — bypasses interception (it's a beam/AoE)
+ *  and aggregates per-square hits into a single damage write. */
+function damageBaseDirect(playerId: PlayerId, damage: number): void {
+  const player = state.players[playerId];
+  if (player.baseDestroyed || damage <= 0) return;
+  const newHp = Math.max(0, player.baseHitPoints - damage);
+  player.baseHitPoints = newHp;
+  emit({ type: 'BASE_DAMAGED', player: playerId, damage, newHp });
+  if (newHp <= 0) {
+    destroyBase(playerId);
+  }
+}
+
+export function executeArtilleryBallisticAgainstUnit(artillery: Unit, target: Unit): void {
+  const ballisticDamage = getArtilleryBallisticDamageAgainstUnit(artillery);
+  applyUnitAttack(artillery, target, {
+    damageType: DAMAGE_TYPES.ATTACK,
+    damageAmount: ballisticDamage,
+    skipCoreMagnetRedirect: true,
+    skipAttackVisual: true,
+  });
+  markArtilleryFired(artillery);
+  addLog(`${artillery.owner} Artillery Ballistic struck ${target.unitName} for ${ballisticDamage}.`);
+}
+
+export function executeArtilleryBallisticAgainstBase(
+  artillery: Unit,
+  targetPlayerId: PlayerId,
+  targetSquareKey: string,
+): void {
+  const ballisticBaseDamage = getArtilleryBallisticDamageAgainstBase(artillery);
+  applyBaseAttack(artillery, targetPlayerId, targetSquareKey, DAMAGE_TYPES.ATTACK, ballisticBaseDamage);
+  markArtilleryFired(artillery);
+  addLog(
+    `${artillery.owner} Artillery Ballistic struck Player ${targetPlayerId} base for ${ballisticBaseDamage}.`,
+  );
+}
+
+/** Gauss beam: damages all units along a line of squares + base hits per
+ *  vulnerable frontal square crossed. */
+export function executeArtilleryGauss(artillery: Unit, lineKeys: string[]): void {
+  const damage = getUnitCurrentAttackDamage(artillery);
+  const targetUnits = state.units.filter((u) => lineKeys.includes(toSquareKey(u.x, u.z)));
+  for (const unit of targetUnits) {
+    applyUnitAttack(artillery, unit, {
+      damageType: DAMAGE_TYPES.ATTACK,
+      damageAmount: damage,
+      skipCoreMagnetRedirect: true,
+      skipAttackVisual: true,
+    });
+  }
+  // Vulnerable-square explosions: emitted from the engine so both clients
+  // see them (the firing client and the opponent's view).
+  for (const basePlayerId of ['A', 'B'] as PlayerId[]) {
+    const frontalSquares = BASE_ARTILLERY_FRONT_SQUARES[basePlayerId];
+    let baseHits = 0;
+    for (const squareKey of lineKeys) {
+      if (frontalSquares?.has(squareKey)) {
+        baseHits += 1;
+        const sq = fromSquareKey(squareKey);
+        emit({
+          type: 'EFFECT_EXPLOSION',
+          gridX: sq.x, gridZ: sq.z, y: 0.5,
+          options: { particleCount: 14, duration: 0.62, speedMin: 1.2, speedMax: 2.4 },
+        });
+      }
+    }
+    if (baseHits > 0) {
+      const total = damage * baseHits;
+      damageBaseDirect(basePlayerId, total);
+      addLog(
+        `${artillery.owner} Artillery Gauss hit Player ${basePlayerId} base for ${total} via vulnerable square(s).`,
+      );
+    }
+  }
+  markArtilleryFired(artillery);
+  addLog(
+    `${artillery.owner} Artillery fired Gauss beam through ${lineKeys.join(', ')} for ${damage} each square.`,
+  );
+}
+
+/** 2x2 standard shell: damages all units in the area + base hits per
+ *  vulnerable frontal square in the area. */
+export function executeArtilleryArea(artillery: Unit, areaKeys: string[]): void {
+  const damage = getUnitCurrentAttackDamage(artillery);
+  const targetUnits = state.units.filter((u) => areaKeys.includes(toSquareKey(u.x, u.z)));
+  for (const unit of targetUnits) {
+    applyUnitAttack(artillery, unit, {
+      damageType: DAMAGE_TYPES.ATTACK,
+      damageAmount: damage,
+      skipCoreMagnetRedirect: true,
+      skipAttackVisual: true,
+    });
+  }
+  for (const basePlayerId of ['A', 'B'] as PlayerId[]) {
+    const frontalSquares = BASE_ARTILLERY_FRONT_SQUARES[basePlayerId];
+    let baseHits = 0;
+    for (const squareKey of areaKeys) {
+      if (frontalSquares?.has(squareKey)) {
+        baseHits += 1;
+        const sq = fromSquareKey(squareKey);
+        emit({
+          type: 'EFFECT_EXPLOSION',
+          gridX: sq.x, gridZ: sq.z, y: 0.5,
+          options: { particleCount: 14, duration: 0.62, speedMin: 1.2, speedMax: 2.4 },
+        });
+      }
+    }
+    if (baseHits > 0) {
+      const total = damage * baseHits;
+      damageBaseDirect(basePlayerId, total);
+      addLog(
+        `${artillery.owner} Artillery hit Player ${basePlayerId} base for ${total} via vulnerable square(s).`,
+      );
+    }
+  }
+  // Center burst — averaged over the 2x2 area.
+  let cx = 0, cz = 0;
+  for (const k of areaKeys) {
+    const sq = fromSquareKey(k);
+    cx += sq.x; cz += sq.z;
+  }
+  cx /= areaKeys.length; cz /= areaKeys.length;
+  emit({
+    type: 'EFFECT_EXPLOSION',
+    gridX: cx, gridZ: cz, y: 0.55,
+    options: { particleCount: 20, duration: 0.8, speedMin: 1.2, speedMax: 2.9 },
+  });
+
+  markArtilleryFired(artillery);
+  addLog(`${artillery.owner} Artillery bombarded ${areaKeys.join(', ')} for ${damage} each square.`);
 }

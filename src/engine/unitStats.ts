@@ -11,8 +11,9 @@ import {
   getCurrentPlayer,
   canPlayerDirectlyTargetUnit
 } from '../utils.ts';
-import { addLog } from '../ui/log.ts';
+import { addLog, emit } from '../shared/events.ts';
 import { getBuildingGrantedStatusIds } from './buildings.ts';
+import { setSupply } from './playerResources.ts';
 
 // ---------------------------------------------------------------------------
 // Basic status checks
@@ -258,7 +259,7 @@ export function awardSupplyFromDrone(player: Player, unit: Unit, baseSupply: num
   const plusSupplyBonus = droneHasPlusSupplyStatus(unit) ? Math.floor(baseSupply * 0.5) : 0;
   const providerBonus = droneHasProviderStatus(unit) ? 3 : 0;
   const total = baseSupply + plusSupplyBonus + providerBonus;
-  player.supply += total;
+  setSupply(player, player.supply + total);
   if (plusSupplyBonus > 0 || providerBonus > 0) {
     addLog(
       `${unit.unitName} ${reason} supply: ${baseSupply}` +
@@ -490,6 +491,7 @@ export function applyShieldToUnit(unit: Unit | null | undefined, shieldAmount: n
   } else {
     unit.shieldHitPoints = Math.max(unit.shieldHitPoints ?? 0, value);
   }
+  emit({ type: 'UNIT_SHIELDED', unitId: unit.id, newShield: unit.shieldHitPoints });
 }
 
 export function removeUnitShield(unit: Unit | null | undefined): number {
@@ -498,5 +500,6 @@ export function removeUnitShield(unit: Unit | null | undefined): number {
   }
   const removed = Math.max(0, unit.shieldHitPoints ?? 0);
   unit.shieldHitPoints = 0;
+  emit({ type: 'UNIT_SHIELDED', unitId: unit.id, newShield: 0 });
   return removed;
 }

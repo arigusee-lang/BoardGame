@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { gridToWorld, getDistance } from '../utils.ts';
+import { getDistance } from '../utils.ts';
+import { gridToWorld } from './coords.ts';
 import {
   unitVisualsById,
   movementAnimations,

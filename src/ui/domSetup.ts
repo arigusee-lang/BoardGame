@@ -4,8 +4,6 @@ export let pileAEl: HTMLDivElement;
 export let pileBEl: HTMLDivElement;
 export let turnStatusEl: HTMLDivElement;
 export let logEl: HTMLDivElement;
-export let axisTopEl: HTMLDivElement;
-export let axisLeftEl: HTMLDivElement;
 export let endTurnBtn: HTMLButtonElement;
 export let droneStatsLeftEl: HTMLDivElement;
 export let droneStatsRightEl: HTMLDivElement;
@@ -26,8 +24,6 @@ export function initDomSetup(): void {
 
     <div class="board-wrap">
       <div id="board3d"></div>
-      <div class="axis axis-top" id="axisTop"></div>
-      <div class="axis axis-left" id="axisLeft"></div>
       <div class="process-echo-panel left" id="processEchoLeft">
         <div class="process-echo-title">Process Echo</div>
         <div class="process-echo-buttons">
@@ -56,7 +52,13 @@ export function initDomSetup(): void {
       <div class="pile pile-b" id="pileB"></div>
     </div>
 
-    <div class="log" id="log"></div>
+    <div class="log-wrap" id="logWrap">
+      <button class="log-toggle" id="logToggle" type="button" title="Collapse / expand log">
+        <span class="log-toggle-label">Log</span>
+        <span class="log-toggle-chevron">▾</span>
+      </button>
+      <div class="log" id="log"></div>
+    </div>
   </div>
 `;
 
@@ -66,8 +68,6 @@ export function initDomSetup(): void {
   pileBEl = document.getElementById('pileB') as HTMLDivElement;
   turnStatusEl = document.getElementById('turnStatus') as HTMLDivElement;
   logEl = document.getElementById('log') as HTMLDivElement;
-  axisTopEl = document.getElementById('axisTop') as HTMLDivElement;
-  axisLeftEl = document.getElementById('axisLeft') as HTMLDivElement;
   endTurnBtn = document.getElementById('endTurnBtn') as HTMLButtonElement;
   droneStatsLeftEl = document.getElementById('droneStatsLeft') as HTMLDivElement;
   droneStatsRightEl = document.getElementById('droneStatsRight') as HTMLDivElement;
@@ -75,4 +75,23 @@ export function initDomSetup(): void {
   overlayEl = document.createElement('div') as HTMLDivElement;
   overlayEl.id = 'overlayRoot';
   app.appendChild(overlayEl);
+
+  initLogToggle();
+}
+
+function initLogToggle(): void {
+  const wrap = document.getElementById('logWrap') as HTMLDivElement | null;
+  const toggle = document.getElementById('logToggle') as HTMLButtonElement | null;
+  if (!wrap || !toggle) return;
+
+  const STORAGE_KEY = 'boardgame.logCollapsed';
+  const start = localStorage.getItem(STORAGE_KEY) === '1';
+  if (start) wrap.classList.add('collapsed');
+
+  toggle.addEventListener('click', () => {
+    const collapsed = wrap.classList.toggle('collapsed');
+    localStorage.setItem(STORAGE_KEY, collapsed ? '1' : '0');
+    // Resize the 3D viewport: the board-wrap row in the grid grew/shrunk.
+    window.dispatchEvent(new Event('resize'));
+  });
 }

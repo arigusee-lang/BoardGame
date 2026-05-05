@@ -9,8 +9,7 @@ import {
   clearSelection,
   canPlayerDirectlyTargetUnit
 } from '../utils.ts';
-import { renderUI, syncBoardVisualState } from '../bridge.ts';
-import { addLog } from '../ui/log.ts';
+import { renderUI, syncBoardVisualState, addLog } from '../shared/events.ts';
 import {
   getUnitCurrentMoveRange,
   getUnitCurrentAttackRange,
@@ -20,9 +19,21 @@ import {
   getBulwarkAdjacentSquareKeys,
   canCoreMagnetHealThisTurn,
   markCoreMagnetHealedThisTurn,
-  casterHasRepairAbility
+  casterHasRepairAbility,
+  applyGhostbladeShellGuard,
+  hasSalvoEmpStatus,
+  getSpecialistEmpCooldownTurns
 } from './unitStats.ts';
+import { removeUnit } from './combat.ts';
+import { toSquareKey } from '../utils.ts';
+import { ATTACK_TYPES } from '../constants.ts';
 import { getCardEnergyCost } from './cards.ts';
+import { setEnergy, setSupply } from './playerResources.ts';
+import { applyUnitAttack } from './combat.ts';
+import { getUnitCurrentAttackDamage } from './unitStats.ts';
+import { fromSquareKey } from '../utils.ts';
+import { DAMAGE_TYPES } from '../constants.ts';
+import { emit } from '../shared/events.ts';
 
 // ---------------------------------------------------------------------------
 // Tactical Dash (Pawn Drone)
@@ -99,6 +110,7 @@ export function activateCoreMagnet(unit: Unit): void {
   unit.coreMagnetBulwarkCenterSquareKey = null;
   if (!beacon || canCoreMagnetHealThisTurn(unit)) {
     unit.hitPoints = Math.min(unit.maxHitPoints, unit.hitPoints + 5);
+    emit({ type: 'UNIT_HEALED', unitId: unit.id, amount: 5, newHp: unit.hitPoints });
     markCoreMagnetHealedThisTurn(unit);
   }
   if (!beacon) {
@@ -152,6 +164,7 @@ export function activateBulwarkCoreMagnet(unit: Unit, centerSquareKey: string): 
   unit.coreMagnetCooldown = beacon ? 0 : 3;
   if (!beacon || canCoreMagnetHealThisTurn(unit)) {
     unit.hitPoints = Math.min(unit.maxHitPoints, unit.hitPoints + 5);
+    emit({ type: 'UNIT_HEALED', unitId: unit.id, amount: 5, newHp: unit.hitPoints });
     markCoreMagnetHealedThisTurn(unit);
   }
   if (!beacon) {
@@ -242,7 +255,7 @@ export function activateArtillerySetUp(unit: Unit | null | undefined): void {
 export function applyRepairAbility(caster: Unit, target: Unit): void {
   const currentPlayer = getCurrentPlayer();
   const repairEnergyCost = unitHasStatus(caster, DRONE_STATUS_LIBRARY.SMART.id) ? 0 : 5;
-  currentPlayer.energy -= repairEnergyCost;
+  setEnergy(currentPlayer, currentPlayer.energy - repairEnergyCost);
   caster.repairCooldown = 2;
   caster.movementUsedThisTurn = getUnitCurrentMoveRange(caster);
   caster.hasMoved = true;
@@ -272,6 +285,23 @@ export function applyRepairAbility(caster: Unit, target: Unit): void {
 
   state.mode = 'idle';
   state.repairTargetingCasterId = null;
+
+  // Emit healed events at the end (final hp). Idempotent on the receiving
+  // client (event applier writes the same final value).
+  emit({
+    type: 'UNIT_HEALED',
+    unitId: target.id,
+    amount: restored + mechaTargetBonusApplied,
+    newHp: target.hitPoints,
+  });
+  if (mechaSelfBonusApplied > 0) {
+    emit({
+      type: 'UNIT_HEALED',
+      unitId: caster.id,
+      amount: mechaSelfBonusApplied,
+      newHp: caster.hitPoints,
+    });
+  }
 
   playRepairCasterAnimation(caster.id);
   playRepairTargetAnimation(target.id);
@@ -333,6 +363,48 @@ export function applyShieldingEffectToUnit(unit: Unit, level: number): void {
 }
 
 // ---------------------------------------------------------------------------
+// Shielding (instant from hand or echo replay)
+// ---------------------------------------------------------------------------
+
+export type CardSourceArg =
+  | { source: 'hand'; handIndex: number }
+  | { source: 'echo'; slot: '1' | '2' | '3' };
+
+export function executeShielding(unit: Unit, sourceArg: CardSourceArg): void {
+  const currentPlayer = getCurrentPlayer();
+  if (sourceArg.source === 'hand') {
+    const sourceCard = currentPlayer.hand[sourceArg.handIndex];
+    if (!sourceCard || sourceCard.cardId !== CARD_LIBRARY.SHIELDING.id) {
+      clearSelection();
+      renderUI();
+      return;
+    }
+    const cardTemplate = CARD_LIBRARY.SHIELDING;
+    if (currentPlayer.energy < cardTemplate.energyCost) {
+      addLog(`Not enough Energy to play ${cardTemplate.cardName}.`);
+      return;
+    }
+    setEnergy(currentPlayer, currentPlayer.energy - cardTemplate.energyCost);
+    currentPlayer.hand.splice(sourceArg.handIndex, 1);
+    currentPlayer.discard.push(sourceCard);
+    applyShieldingEffectToUnit(unit, 1);
+    return;
+  }
+
+  const slot = sourceArg.slot;
+  const slotCard = currentPlayer.processEcho?.[slot as ProcessEchoSlot];
+  if (!slotCard || slotCard.cardId !== CARD_LIBRARY.SHIELDING.id) {
+    addLog('That Process Echo slot is empty.');
+    clearSelection();
+    renderUI();
+    return;
+  }
+  const level = state.pendingShieldingLevel ?? 1;
+  applyProcessEchoPlayResult(currentPlayer, slot as ProcessEchoSlot);
+  applyShieldingEffectToUnit(unit, level);
+}
+
+// ---------------------------------------------------------------------------
 // Shimmering Cloak selection
 // ---------------------------------------------------------------------------
 
@@ -354,7 +426,7 @@ export function applyShimmeringCloakSelection(level: number, squareKeys: string[
       addLog(`Not enough Energy to play ${cardTemplate.cardName}.`);
       return;
     }
-    currentPlayer.energy -= cardTemplate.energyCost;
+    setEnergy(currentPlayer, currentPlayer.energy - cardTemplate.energyCost);
     currentPlayer.hand.splice(state.selectedCardHandIndex!, 1);
     currentPlayer.discard.push(sourceCard);
   } else if ((state.mode as string) === 'shimmering_targeting_echo') {
@@ -420,15 +492,184 @@ export function executeHarvestDataAbsorb(sourceIndex: number, targetIndex: numbe
     return;
   }
 
-  currentPlayer.energy -= sourceTemplate.energyCost;
+  setEnergy(currentPlayer, currentPlayer.energy - sourceTemplate.energyCost);
   const absorbedEnergyCost = getCardEnergyCost(targetCard);
-  currentPlayer.supply += absorbedEnergyCost;
+  setSupply(currentPlayer, currentPlayer.supply + absorbedEnergyCost);
   currentPlayer.hand = currentPlayer.hand.filter((_: Card, index: number) => index !== sourceIndex && index !== targetIndex);
   currentPlayer.discard.push(sourceCard);
 
   addLog(
     `Player ${currentPlayer.id} used Harvest Data: absorbed ${absorbedTemplate.cardName} and gained ${absorbedEnergyCost} Supply.`
   );
+  clearSelection();
+  renderUI();
+}
+
+// ---------------------------------------------------------------------------
+// System Shock — instant from hand or replay from Process Echo
+// ---------------------------------------------------------------------------
+
+export function executeSystemShock(target: Unit, sourceArg: CardSourceArg): void {
+  const currentPlayer = getCurrentPlayer();
+  let level: number;
+
+  if (sourceArg.source === 'hand') {
+    const sourceCard = currentPlayer.hand[sourceArg.handIndex];
+    if (!sourceCard || sourceCard.cardId !== CARD_LIBRARY.SYSTEM_SHOCK.id) {
+      clearSelection();
+      renderUI();
+      return;
+    }
+    if (currentPlayer.energy < CARD_LIBRARY.SYSTEM_SHOCK.energyCost) {
+      addLog('Not enough Energy to use System Shock.');
+      return;
+    }
+    setEnergy(currentPlayer, currentPlayer.energy - CARD_LIBRARY.SYSTEM_SHOCK.energyCost);
+    currentPlayer.hand.splice(sourceArg.handIndex, 1);
+    currentPlayer.discard.push(sourceCard);
+    level = 1;
+  } else {
+    const slot = sourceArg.slot;
+    const slotCard = currentPlayer.processEcho?.[slot as ProcessEchoSlot];
+    if (!slotCard || slotCard.cardId !== CARD_LIBRARY.SYSTEM_SHOCK.id) {
+      addLog('That Process Echo slot is empty.');
+      clearSelection();
+      renderUI();
+      return;
+    }
+    applyProcessEchoPlayResult(currentPlayer, slot as ProcessEchoSlot);
+    level = Number.parseInt(slot, 10);
+  }
+
+  const safeLevel = Math.max(1, Math.min(3, level));
+  const shockDamage = safeLevel >= 2 ? 8 : 5;
+  const targetId = target.id;
+
+  const shellGuardOutcome = applyGhostbladeShellGuard(target, shockDamage, DAMAGE_TYPES.SYSTEM);
+  target.hitPoints -= shellGuardOutcome.damage;
+  emit({
+    type: 'UNIT_DAMAGED',
+    unitId: target.id,
+    damage: shellGuardOutcome.damage,
+    newHp: target.hitPoints,
+    newShield: target.shieldHitPoints,
+    damageType: DAMAGE_TYPES.SYSTEM,
+  });
+  addLog(
+    `Player ${currentPlayer.id} cast System Shock Level ${safeLevel} on ${target.unitName} for ${shellGuardOutcome.damage} (${DAMAGE_TYPES.SYSTEM}).`,
+  );
+  if (shellGuardOutcome.consumed) {
+    addLog(`${target.unitName} Shell guard was consumed.`);
+  }
+  if (target.hitPoints <= 0) {
+    addLog(`${target.unitName} of Player ${target.owner} was destroyed.`);
+    removeUnit(target.id);
+  }
+
+  if (safeLevel >= 3 && !state.units.find((u) => u.id === targetId)) {
+    setEnergy(currentPlayer, Math.min(currentPlayer.maxEnergy, currentPlayer.energy + 10));
+    addLog(`System Shock Level 3 bonus: Player ${currentPlayer.id} gained 10 Energy.`);
+  }
+
+  clearSelection();
+  syncBoardVisualState();
+  renderUI();
+}
+
+// ---------------------------------------------------------------------------
+// Specialist EMP — area attack of zero damage that applies Stun via the
+// EMP attackType. Called once for every unit in the AoE, with cooldown +
+// energy bookkeeping centralised here.
+// ---------------------------------------------------------------------------
+
+export function executeSpecialistEmp(specialist: Unit, areaKeys: string[]): void {
+  const currentPlayer = getCurrentPlayer();
+  if (currentPlayer.energy < 5) {
+    addLog('Not enough Energy to use EMP.');
+    return;
+  }
+  const hasSalvo = hasSalvoEmpStatus(specialist);
+  const empUsesThisTurn = specialist.specialistEmpUsesThisTurn ?? 0;
+
+  setEnergy(currentPlayer, currentPlayer.energy - 5);
+  specialist.specialistEmpUsesThisTurn = empUsesThisTurn + 1;
+  if (hasSalvo) {
+    if (specialist.specialistEmpUsesThisTurn >= 2) {
+      specialist.specialistEmpCooldown = getSpecialistEmpCooldownTurns(specialist);
+      specialist.specialistEmpPendingCooldown = false;
+    } else {
+      specialist.specialistEmpPendingCooldown = true;
+    }
+  } else {
+    specialist.specialistEmpCooldown = getSpecialistEmpCooldownTurns(specialist);
+  }
+  specialist.hasAttacked = true;
+
+  const targets = state.units.filter((unit) => areaKeys.includes(toSquareKey(unit.x, unit.z)));
+  for (const unit of targets) {
+    applyUnitAttack(specialist, unit, {
+      attackType: ATTACK_TYPES.EMP,
+      damageType: DAMAGE_TYPES.ATTACK,
+      damageAmount: 0,
+      skipCoreMagnetRedirect: true,
+      skipAttackVisual: true,
+    });
+  }
+
+  // Center burst — visible to both clients via the broadcast event stream.
+  let cx = 0, cz = 0;
+  for (const k of areaKeys) {
+    const sq = fromSquareKey(k);
+    cx += sq.x; cz += sq.z;
+  }
+  cx /= areaKeys.length; cz /= areaKeys.length;
+  emit({
+    type: 'EFFECT_EXPLOSION',
+    gridX: cx, gridZ: cz, y: 0.5,
+    options: { particleCount: 16, duration: 0.55, speedMin: 1.0, speedMax: 2.2 },
+  });
+
+  addLog(
+    `${specialist.owner} Specialist used EMP on ${areaKeys.join(', ')}.` +
+      (hasSalvo ? ` (Salvo uses: ${specialist.specialistEmpUsesThisTurn}/2)` : ''),
+  );
+
+  state.mode = 'unit_selected' as string as typeof state.mode;
+  state.hoverSquareKey = null;
+  state.specialistEmpCasterId = null;
+  syncBoardVisualState();
+  renderUI();
+}
+
+// ---------------------------------------------------------------------------
+// Process Echo: store a perk card from hand into slot X (carry-over)
+// ---------------------------------------------------------------------------
+
+export function executeProcessEchoStore(handIndex: number, slot: ProcessEchoSlot): void {
+  const currentPlayer = getCurrentPlayer();
+  const card = currentPlayer.hand[handIndex];
+  if (!card) {
+    addLog('Select a storable Perk card first.');
+    return;
+  }
+  const storableIds: string[] = [
+    CARD_LIBRARY.SYSTEM_SHOCK.id,
+    CARD_LIBRARY.SHIELDING.id,
+    CARD_LIBRARY.SHIMMERING_CLOAK.id,
+  ];
+  if (!storableIds.includes(card.cardId)) {
+    addLog('That card cannot be stored in Process Echo.');
+    return;
+  }
+  const echo = currentPlayer.processEcho;
+  if (!echo) return;
+  if (slot === 'X' && echo.X) {
+    currentPlayer.discard.push(echo.X);
+    addLog(`Player ${currentPlayer.id} replaced the card in Process Echo X. Old card moved to discard.`);
+  }
+  echo[slot] = card;
+  currentPlayer.hand.splice(handIndex, 1);
+  addLog(`Player ${currentPlayer.id} stored ${CARD_LIBRARY[card.cardId].cardName} in Process Echo ${slot}.`);
   clearSelection();
   renderUI();
 }
@@ -458,4 +699,44 @@ export function registerAbilityDeps(deps: AbilityDeps): void {
   if (deps.applyShieldToUnit) applyShieldToUnit = deps.applyShieldToUnit;
   if (deps.addShimmeringCloak) addShimmeringCloak = deps.addShimmeringCloak;
   if (deps.applyProcessEchoPlayResult) applyProcessEchoPlayResult = deps.applyProcessEchoPlayResult;
+}
+
+// ---------------------------------------------------------------------------
+// Ghostblade teleport — extracted from inputTargeting so the input layer no
+// longer mutates unit position / cooldown / player energy directly.
+// ---------------------------------------------------------------------------
+
+export function executeGhostbladeTeleport(caster: Unit, targetSquareKey: string): void {
+  const target = fromSquareKey(targetSquareKey);
+  const fromX = caster.x;
+  const fromZ = caster.z;
+  caster.x = target.x;
+  caster.z = target.z;
+  caster.hasMoved = true;
+  caster.ghostbladeTeleportCooldown = 5;
+  const player = state.players[caster.owner];
+  setEnergy(player, player.energy - 10);
+  emit({
+    type: 'UNIT_MOVED',
+    unitId: caster.id,
+    fromX,
+    fromZ,
+    toX: target.x,
+    toZ: target.z,
+  });
+
+  const ghostbladeDamage = getUnitCurrentAttackDamage(caster);
+  const affected = state.units.filter(
+    (unit) =>
+      unit.owner !== caster.owner &&
+      getDistance(target.x, target.z, unit.x, unit.z) <= 1
+  );
+  for (const unit of affected) {
+    applyUnitAttack(caster, unit, {
+      damageType: DAMAGE_TYPES.ATTACK,
+      damageAmount: ghostbladeDamage,
+      skipCoreMagnetRedirect: true,
+    });
+  }
+  addLog(`${caster.owner} Ghostblade teleported to ${targetSquareKey} and dealt ${ghostbladeDamage} AoE damage.`);
 }

@@ -23,6 +23,7 @@ import {
   overlayEl,
   droneStatsLeftEl,
   droneStatsRightEl,
+  endTurnBtn,
 } from './domSetup.ts';
 import {
   getBuildingDisplayName,
@@ -30,7 +31,7 @@ import {
   getBuildingCardUpgradeIconsHtml,
   getBuildingAbilityCardsHtml,
 } from './uiHelpers.ts';
-import { addLog } from './log.ts';
+import { logHint } from './log.ts';
 import {
   getUnitCurrentMoveRange,
   getUnitCurrentAttackRange,
@@ -47,45 +48,47 @@ import {
   getSpecialistEmpCooldownTurns,
 } from '../engine/unitStats.ts';
 import { getCardEnergyCost } from '../engine/cards.ts';
+import { setEnergy, setMaxEnergy } from '../engine/playerResources.ts';
 import {
   canBuildingBeUpgraded,
   getBuildingUpgradeSupplyCost,
   activateFoundationTargeting,
-  confirmFoundationUse,
-  activateArmoryProduction,
-  activateReplicatorProduction,
-  activateWorkshopProduction,
-  activateDatacenterObtain,
-  activateDatacenterProduction,
-  activateGearStationOverload,
-  activateGearStationProduction,
-  activateAssemblyLineDraw,
-  activateAssemblyLineProduction,
-  activateBuildingUpgrade,
-  confirmBuildingUpgradeStatusSelection,
-  confirmArmoryBuildPlacement,
-  confirmReplicatorBuildPlacement,
-  confirmWorkshopBuildPlacement,
-  confirmDatacenterBuildPlacement,
-  confirmGearStationBuildPlacement,
-  confirmAssemblyLineBuildPlacement,
 } from '../engine/buildings.ts';
-import {
-  activateTacticalDash,
-  activateCoreMagnet,
-  activateRepairTargeting,
-  activateArtillerySetUp,
-  executeHarvestDataAbsorb,
-} from '../engine/abilities.ts';
+import type { BuildingType } from '../types';
+import { activateRepairTargeting } from '../engine/abilities.ts';
 import {
   getArtilleryAreaSquareKeys,
   getGaussLineSquareKeysFromTarget,
   hasBallisticStatus,
 } from '../engine/artillery.ts';
-import { syncBoardVisualState } from '../bridge.ts';
+import { syncBoardVisualState } from '../shared/events.ts';
+import { getPlayerName, getMyPlayerId, isMyTurn } from '../playerNames.ts';
+import { dispatch } from '../actionDispatcher.ts';
 
 export function getPlayerMaxEnergy(player: Player): number {
   return player?.maxEnergy ?? MAX_ENERGY;
+}
+
+/**
+ * Reads the active *_status_pick mode and pulls out the matching
+ * {buildingType, squareKey, statusId} so the confirm-button handler can
+ * dispatch a self-contained CONFIRM_BUILDING_PLACEMENT action.
+ *
+ * Returns null when state.mode is not a building status-pick (e.g. the
+ * upgrade flow, which stays a separate action).
+ */
+function readBuildingPlacementFromState(): { buildingType: BuildingType; squareKey: string; statusId: StatusId } | null {
+  const map: Array<{ mode: string; type: BuildingType; squareKey: string | null; statusId: StatusId | null }> = [
+    { mode: 'armory_status_pick', type: 'ARMORY', squareKey: state.pendingArmorySquareKey, statusId: state.pendingArmoryStatusId },
+    { mode: 'replicator_status_pick', type: 'REPLICATOR', squareKey: state.pendingReplicatorSquareKey, statusId: state.pendingReplicatorStatusId },
+    { mode: 'workshop_status_pick', type: 'WORKSHOP', squareKey: state.pendingWorkshopSquareKey, statusId: state.pendingWorkshopStatusId },
+    { mode: 'datacenter_status_pick', type: 'DATACENTER', squareKey: state.pendingDatacenterSquareKey, statusId: state.pendingDatacenterStatusId },
+    { mode: 'gear_station_status_pick', type: 'GEAR_STATION', squareKey: state.pendingGearStationSquareKey, statusId: state.pendingGearStationStatusId },
+    { mode: 'assembly_line_status_pick', type: 'ASSEMBLY_LINE', squareKey: state.pendingAssemblyLineSquareKey, statusId: state.pendingAssemblyLineStatusId },
+  ];
+  const match = map.find((m) => state.mode === m.mode);
+  if (!match || !match.squareKey || !match.statusId) return null;
+  return { buildingType: match.type, squareKey: match.squareKey, statusId: match.statusId };
 }
 
 export function refreshPlayerMaxEnergy(playerId: PlayerId, clampEnergy: boolean = true): number {
@@ -95,18 +98,18 @@ export function refreshPlayerMaxEnergy(playerId: PlayerId, clampEnergy: boolean 
   }
   const datacenterCount = (player.buildings ?? []).filter((building) => building.type === 'DATACENTER').length;
   const computedMaxEnergy = MAX_ENERGY + datacenterCount * 5;
-  player.maxEnergy = computedMaxEnergy;
+  setMaxEnergy(player, computedMaxEnergy);
   if (clampEnergy) {
-    player.energy = Math.min(player.energy, computedMaxEnergy);
+    setEnergy(player, Math.min(player.energy, computedMaxEnergy));
   }
   return computedMaxEnergy;
 }
 
 export function renderUI(): void {
-  refreshPlayerMaxEnergy('A', true);
-  refreshPlayerMaxEnergy('B', true);
+  // renderUI is read-only on game state. `player.maxEnergy` is kept in sync
+  // by the events that actually change it (createBuilding,
+  // confirmFoundationUse, destroyBase, startTurn). No mutating recompute here.
   const currentPlayer = getCurrentPlayer();
-  const opponentId = currentPlayer.id === 'A' ? 'B' : 'A';
   const playerA = state.players.A;
   const playerB = state.players.B;
   const aHp = state.players.A.baseHitPoints;
@@ -120,26 +123,36 @@ export function renderUI(): void {
   const playerBMaxEnergy = getPlayerMaxEnergy(playerB);
   const energyPct = Math.max(0, Math.min(100, (currentPlayer.energy / currentPlayerMaxEnergy) * 100));
 
+  const myPid = getMyPlayerId();
+  const turnLabel = myPid === null
+    ? `${getPlayerName(currentPlayer.id)}'s Turn`
+    : (isMyTurn(currentPlayer.id) ? `Your Turn (${getPlayerName(currentPlayer.id)})` : `Opponent's Turn (${getPlayerName(currentPlayer.id)})`);
+  const youBadge = myPid !== null ? `<span class="you-badge ${myPid.toLowerCase()}">You: ${getPlayerName(myPid)} (${myPid})</span>` : '';
+
   turnStatusEl.innerHTML = `
-    <div class="status-main">Player ${currentPlayer.id} Turn</div>
-    <div class="base-hp-row">
+    <div class="status-row">
+      <div class="status-main">${turnLabel} ${youBadge}</div>
       <div class="base-hp a">
-        <div class="base-hp-head">A Base <span>${aHp}</span></div>
+        <div class="base-hp-head">${getPlayerName('A')} <span>${aHp}</span></div>
         <div class="base-hp-track"><div class="base-hp-fill a" style="width: ${aPct}%"></div></div>
       </div>
       <div class="base-hp b">
-        <div class="base-hp-head">B Base <span>${bHp}</span></div>
+        <div class="base-hp-head">${getPlayerName('B')} <span>${bHp}</span></div>
         <div class="base-hp-track"><div class="base-hp-fill b" style="width: ${bPct}%"></div></div>
       </div>
-    </div>
-    <div class="energy-panel">
-      <div class="energy-head">Energy <span>${currentPlayer.energy}/${currentPlayerMaxEnergy}</span></div>
-      <div class="energy-track"><div class="energy-fill" style="width: ${energyPct}%"></div></div>
-    </div>
-    <div class="status-help">
-      Left click: select card/unit/target. Right mouse hold: rotate camera.
+      <div class="energy-panel">
+        <div class="energy-head">Energy <span>${currentPlayer.energy}/${currentPlayerMaxEnergy}</span></div>
+        <div class="energy-track"><div class="energy-fill" style="width: ${energyPct}%"></div></div>
+      </div>
     </div>
   `;
+
+  // In multiplayer, disable End Turn when it isn't this player's turn.
+  if (endTurnBtn) {
+    const myTurn = isMyTurn(currentPlayer.id);
+    endTurnBtn.disabled = !myTurn;
+    endTurnBtn.classList.toggle('disabled', !myTurn);
+  }
 
   const selectedUnit = getSelectedUnit();
   const selectedOwnedUnit =
@@ -154,9 +167,6 @@ export function renderUI(): void {
     selectedOwnedUnit && selectedOwnedUnit.unitTypeId === 'ARTILLERY_UNIT' ? selectedOwnedUnit : null;
   const selectedSpecialistUnit =
     selectedOwnedUnit && selectedOwnedUnit.unitTypeId === 'SPECIALIST_UNIT' ? selectedOwnedUnit : null;
-  const selectedUnitText = selectedUnit
-    ? `Selected Unit: ${selectedUnit.unitName} (${toSquareKey(selectedUnit.x, selectedUnit.z)}) HP ${selectedUnit.hitPoints}/${selectedUnit.maxHitPoints}`
-    : 'Selected Unit: none';
 
   const selectedMoveRange = selectedOwnedUnit ? getUnitCurrentMoveRange(selectedOwnedUnit) : 0;
   const selectedAttackRange = selectedOwnedUnit ? getUnitCurrentAttackRange(selectedOwnedUnit) : 0;
@@ -759,7 +769,6 @@ export function renderUI(): void {
         <div class="build-active">Active: ${activeBuildingsList || 'None'}</div>
       </div>
     </div>
-    <div class="selection-info">${selectedUnitText}</div>
   `;
 
   if (state.winner) {
@@ -819,22 +828,20 @@ export function renderUI(): void {
     handEl.innerHTML += `<div class="selection-info">Foundation: confirm the selected building destruction.</div>`;
   } else if (selectedOwnedUnit) {
     handEl.innerHTML += `<div class="selection-info">Move range: ${selectedMoveRange}, Attack range: ${selectedOwnedUnit.attackRange}</div>`;
-  } else {
-    handEl.innerHTML += `<div class="selection-info">Enemy Player: ${opponentId}</div>`;
   }
 
   pileAEl.innerHTML = `
     <div class="pile-title">Player A</div>
-    <div class="pile-resource">Energy: <strong>${playerA.energy}/${playerAMaxEnergy}</strong></div>
-    <div class="pile-resource">Supply: <strong>${playerA.supply}</strong></div>
+    <div class="pile-resource" data-energy>Energy: <strong>${playerA.energy}/${playerAMaxEnergy}</strong></div>
+    <div class="pile-resource" data-supply>Supply: ${playerA.supply}</div>
     <div>Deck: ${playerA.deck.length}</div>
     <div>Discard: ${playerA.discard.length}</div>
   `;
 
   pileBEl.innerHTML = `
     <div class="pile-title">Player B</div>
-    <div class="pile-resource">Energy: <strong>${playerB.energy}/${playerBMaxEnergy}</strong></div>
-    <div class="pile-resource">Supply: <strong>${playerB.supply}</strong></div>
+    <div class="pile-resource" data-energy>Energy: <strong>${playerB.energy}/${playerBMaxEnergy}</strong></div>
+    <div class="pile-resource" data-supply>Supply: ${playerB.supply}</div>
     <div>Deck: ${playerB.deck.length}</div>
     <div>Discard: ${playerB.discard.length}</div>
   `;
@@ -984,7 +991,11 @@ export function renderUI(): void {
           renderUI();
           return;
         }
-        executeHarvestDataAbsorb(state.selectedCardHandIndex!, handIndex);
+        dispatch({
+          type: 'PLAY_HARVEST_DATA_ABSORB',
+          sourceHandIndex: state.selectedCardHandIndex!,
+          targetHandIndex: handIndex,
+        });
         return;
       }
 
@@ -1154,20 +1165,22 @@ export function renderUI(): void {
   const confirmBuildingStatusBtn = overlayEl.querySelector('#confirmBuildingStatusBtn');
   if (confirmBuildingStatusBtn) {
     confirmBuildingStatusBtn.addEventListener('click', () => {
-      if (state.mode === 'armory_status_pick') {
-        confirmArmoryBuildPlacement();
-      } else if (state.mode === 'replicator_status_pick') {
-        confirmReplicatorBuildPlacement();
-      } else if (state.mode === 'workshop_status_pick') {
-        confirmWorkshopBuildPlacement();
-      } else if (state.mode === 'datacenter_status_pick') {
-        confirmDatacenterBuildPlacement();
-      } else if (state.mode === 'gear_station_status_pick') {
-        confirmGearStationBuildPlacement();
-      } else if (state.mode === 'assembly_line_status_pick') {
-        confirmAssemblyLineBuildPlacement();
-      } else if (state.mode === 'building_upgrade_status_pick') {
-        confirmBuildingUpgradeStatusSelection();
+      const placement = readBuildingPlacementFromState();
+      if (placement) {
+        dispatch({
+          type: 'CONFIRM_BUILDING_PLACEMENT',
+          buildingType: placement.buildingType,
+          squareKey: placement.squareKey,
+          statusId: placement.statusId,
+        });
+        return;
+      }
+      if (state.mode === 'building_upgrade_status_pick') {
+        const buildingId = state.pendingUpgradeBuildingId;
+        const statusId = state.pendingUpgradeStatusId;
+        if (buildingId && statusId) {
+          dispatch({ type: 'CONFIRM_BUILDING_UPGRADE', buildingId, statusId });
+        }
       }
     });
   }
@@ -1184,7 +1197,9 @@ export function renderUI(): void {
   const confirmFoundationBtn = overlayEl.querySelector('#confirmFoundationBtn');
   if (confirmFoundationBtn) {
     confirmFoundationBtn.addEventListener('click', () => {
-      confirmFoundationUse();
+      const targetBuildingId = state.pendingFoundationTargetBuildingId;
+      if (!targetBuildingId) return;
+      dispatch({ type: 'FOUNDATION_CONFIRM', targetBuildingId });
     });
   }
 
@@ -1374,105 +1389,31 @@ export function renderUI(): void {
     });
   }
 
-  handEl.querySelectorAll<HTMLButtonElement>('[data-armory-id]').forEach((btn: HTMLButtonElement) => {
-    btn.addEventListener('click', () => {
-      const buildingId = btn.getAttribute('data-armory-id');
-      if (!buildingId) {
-        return;
-      }
-      activateArmoryProduction(buildingId);
+  // Map data-attribute → (ability slot for ACTIVATE_BUILDING). The 'production'
+  // ability is implicit for the Armory/Replicator/Workshop main button; the
+  // *-create-id variants on Datacenter/Gear Station/Assembly Line are the
+  // building's secondary "produce a card" slot, which still maps to the same
+  // 'production' ability in the reducer (the engine routes by building.type).
+  const wireBuildingAbility = (selector: string, ability: 'production' | 'overload' | 'obtain' | 'draw' | 'upgrade', attr: string): void => {
+    handEl.querySelectorAll<HTMLButtonElement>(selector).forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const buildingId = btn.getAttribute(attr);
+        if (!buildingId) return;
+        dispatch({ type: 'ACTIVATE_BUILDING', buildingId, ability });
+      });
     });
-  });
+  };
 
-  handEl.querySelectorAll<HTMLButtonElement>('[data-replicator-id]').forEach((btn: HTMLButtonElement) => {
-    btn.addEventListener('click', () => {
-      const buildingId = btn.getAttribute('data-replicator-id');
-      if (!buildingId) {
-        return;
-      }
-      activateReplicatorProduction(buildingId);
-    });
-  });
-
-  handEl.querySelectorAll<HTMLButtonElement>('[data-workshop-id]').forEach((btn: HTMLButtonElement) => {
-    btn.addEventListener('click', () => {
-      const buildingId = btn.getAttribute('data-workshop-id');
-      if (!buildingId) {
-        return;
-      }
-      activateWorkshopProduction(buildingId);
-    });
-  });
-
-  handEl.querySelectorAll<HTMLButtonElement>('[data-datacenter-id]').forEach((btn: HTMLButtonElement) => {
-    btn.addEventListener('click', () => {
-      const buildingId = btn.getAttribute('data-datacenter-id');
-      if (!buildingId) {
-        return;
-      }
-      activateDatacenterObtain(buildingId);
-    });
-  });
-
-  handEl.querySelectorAll<HTMLButtonElement>('[data-gear-station-id]').forEach((btn: HTMLButtonElement) => {
-    btn.addEventListener('click', () => {
-      const buildingId = btn.getAttribute('data-gear-station-id');
-      if (!buildingId) {
-        return;
-      }
-      activateGearStationOverload(buildingId);
-    });
-  });
-
-  handEl.querySelectorAll<HTMLButtonElement>('[data-assembly-line-id]').forEach((btn: HTMLButtonElement) => {
-    btn.addEventListener('click', () => {
-      const buildingId = btn.getAttribute('data-assembly-line-id');
-      if (!buildingId) {
-        return;
-      }
-      activateAssemblyLineDraw(buildingId);
-    });
-  });
-
-  handEl.querySelectorAll<HTMLButtonElement>('[data-datacenter-create-id]').forEach((btn: HTMLButtonElement) => {
-    btn.addEventListener('click', () => {
-      const buildingId = btn.getAttribute('data-datacenter-create-id');
-      if (!buildingId) {
-        return;
-      }
-      activateDatacenterProduction(buildingId);
-    });
-  });
-
-  handEl.querySelectorAll<HTMLButtonElement>('[data-gear-station-create-id]').forEach((btn: HTMLButtonElement) => {
-    btn.addEventListener('click', () => {
-      const buildingId = btn.getAttribute('data-gear-station-create-id');
-      if (!buildingId) {
-        return;
-      }
-      activateGearStationProduction(buildingId);
-    });
-  });
-
-  handEl.querySelectorAll<HTMLButtonElement>('[data-assembly-line-create-id]').forEach((btn: HTMLButtonElement) => {
-    btn.addEventListener('click', () => {
-      const buildingId = btn.getAttribute('data-assembly-line-create-id');
-      if (!buildingId) {
-        return;
-      }
-      activateAssemblyLineProduction(buildingId);
-    });
-  });
-
-  handEl.querySelectorAll<HTMLButtonElement>('[data-upgrade-building-id]').forEach((btn: HTMLButtonElement) => {
-    btn.addEventListener('click', () => {
-      const buildingId = btn.getAttribute('data-upgrade-building-id');
-      if (!buildingId) {
-        return;
-      }
-      activateBuildingUpgrade(buildingId);
-    });
-  });
+  wireBuildingAbility('[data-armory-id]', 'production', 'data-armory-id');
+  wireBuildingAbility('[data-replicator-id]', 'production', 'data-replicator-id');
+  wireBuildingAbility('[data-workshop-id]', 'production', 'data-workshop-id');
+  wireBuildingAbility('[data-datacenter-id]', 'obtain', 'data-datacenter-id');
+  wireBuildingAbility('[data-gear-station-id]', 'overload', 'data-gear-station-id');
+  wireBuildingAbility('[data-assembly-line-id]', 'draw', 'data-assembly-line-id');
+  wireBuildingAbility('[data-datacenter-create-id]', 'production', 'data-datacenter-create-id');
+  wireBuildingAbility('[data-gear-station-create-id]', 'production', 'data-gear-station-create-id');
+  wireBuildingAbility('[data-assembly-line-create-id]', 'production', 'data-assembly-line-create-id');
+  wireBuildingAbility('[data-upgrade-building-id]', 'upgrade', 'data-upgrade-building-id');
 
   const tacticalDashButton = handEl.querySelector('#abilityTacticalDash');
   if (tacticalDashButton) {
@@ -1481,7 +1422,7 @@ export function renderUI(): void {
       if (!unit || unit.owner !== state.currentPlayerId) {
         return;
       }
-      activateTacticalDash(unit);
+      dispatch({ type: 'ACTIVATE_TACTICAL_DASH', unitId: unit.id });
     });
   }
 
@@ -1493,17 +1434,17 @@ export function renderUI(): void {
         return;
       }
       if (isUnitMovementStunned(unit)) {
-        addLog('This Drone is Dazzled and cannot attack this turn.');
+        logHint('This Drone is Dazzled and cannot attack this turn.');
         return;
       }
       const tankFaceEaterCooldown = getTankFaceEaterAttackCooldown(unit);
       if (tankFaceEaterCooldown > 0) {
-        addLog(`Face-Eater attack cooldown: ${tankFaceEaterCooldown} turn(s) remaining.`);
+        logHint(`Face-Eater attack cooldown: ${tankFaceEaterCooldown} turn(s) remaining.`);
         return;
       }
       if (unit.unitTypeId === 'ARTILLERY_UNIT') {
         if (!unit.artillerySetUpActive) {
-          addLog('Artillery needs Set Up status before attacking.');
+          logHint('Artillery needs Set Up status before attacking.');
           return;
         }
         state.mode = 'artillery_attack_targeting';
@@ -1526,20 +1467,20 @@ export function renderUI(): void {
         return;
       }
       if (isUnitMovementStunned(unit)) {
-        addLog('This Drone is Dazzled and cannot use abilities this turn.');
+        logHint('This Drone is Dazzled and cannot use abilities this turn.');
         return;
       }
       const beacon = hasBeaconCoreMagnet(unit);
       if (!beacon && unit.coreMagnetTurnsLeft > 0) {
-        addLog('Core Magnet is already active on this Tank Drone.');
+        logHint('Core Magnet is already active on this Tank Drone.');
         return;
       }
       if (!beacon && unit.coreMagnetCooldown > 0) {
-        addLog('Core Magnet is on cooldown.');
+        logHint('Core Magnet is on cooldown.');
         return;
       }
       if (beacon && unit.coreMagnetTurnsLeft > 0) {
-        activateCoreMagnet(unit);
+        dispatch({ type: 'ACTIVATE_CORE_MAGNET', unitId: unit.id });
         return;
       }
       state.coreMagnetPreviewUnitId = unit.id;
@@ -1563,10 +1504,10 @@ export function renderUI(): void {
         return;
       }
       if (unitHasStatus(unit, DRONE_STATUS_LIBRARY.BULWARK.id)) {
-        addLog('Bulwark Core Magnet is activated by choosing an adjacent square.');
+        logHint('Bulwark Core Magnet is activated by choosing an adjacent square.');
         return;
       }
-      activateCoreMagnet(unit);
+      dispatch({ type: 'ACTIVATE_CORE_MAGNET', unitId: unit.id });
     });
   }
 
@@ -1602,11 +1543,11 @@ export function renderUI(): void {
         return;
       }
       if (unit.ghostbladeTeleportCooldown > 0) {
-        addLog('Teleport is on cooldown.');
+        logHint('Teleport is on cooldown.');
         return;
       }
       if (getCurrentPlayer().energy < 10) {
-        addLog('Not enough Energy to use Teleport.');
+        logHint('Not enough Energy to use Teleport.');
         return;
       }
       state.mode = 'ghostblade_teleport_targeting';
@@ -1625,7 +1566,7 @@ export function renderUI(): void {
       if (!unit || unit.owner !== state.currentPlayerId || unit.unitTypeId !== 'ARTILLERY_UNIT') {
         return;
       }
-      activateArtillerySetUp(unit);
+      dispatch({ type: 'ACTIVATE_ARTILLERY_SETUP', unitId: unit.id });
     });
   }
 
@@ -1637,19 +1578,19 @@ export function renderUI(): void {
         return;
       }
       if (unit.specialistEmpCooldown > 0) {
-        addLog('EMP is on cooldown.');
+        logHint('EMP is on cooldown.');
         return;
       }
       if (hasSalvoEmpStatus(unit) && (unit.specialistEmpUsesThisTurn ?? 0) >= 2) {
-        addLog('Salvo: this Specialist already used EMP twice this turn.');
+        logHint('Salvo: this Specialist already used EMP twice this turn.');
         return;
       }
       if (unit.hasAttacked && !hasSalvoEmpStatus(unit)) {
-        addLog('Specialist cannot use EMP after attacking this turn.');
+        logHint('Specialist cannot use EMP after attacking this turn.');
         return;
       }
       if (getCurrentPlayer().energy < 5) {
-        addLog('Not enough Energy to use EMP.');
+        logHint('Not enough Energy to use EMP.');
         return;
       }
       state.mode = 'specialist_emp_targeting';
@@ -1704,11 +1645,11 @@ export function renderProcessEchoPanels(currentPlayer: Player): void {
 
         if (slot === 'X') {
           if (state.mode !== 'system_shock_card' && state.mode !== 'shielding_card' && state.mode !== 'shimmering_card') {
-            addLog('Cards in X cannot be played this turn unless the card says otherwise.');
+            logHint('Cards in X cannot be played this turn unless the card says otherwise.');
             return;
           }
           if (state.selectedCardHandIndex === null) {
-            addLog('Select a storable Perk card first.');
+            logHint('Select a storable Perk card first.');
             return;
           }
           const selectedCard = currentPlayer.hand[state.selectedCardHandIndex];
@@ -1718,32 +1659,28 @@ export function renderProcessEchoPanels(currentPlayer: Player): void {
               selectedCard.cardId !== CARD_LIBRARY.SHIELDING.id &&
               selectedCard.cardId !== CARD_LIBRARY.SHIMMERING_CLOAK.id)
           ) {
-            addLog('Select a storable Perk card first.');
+            logHint('Select a storable Perk card first.');
             return;
           }
-          if (echo.X) {
-            currentPlayer.discard.push(echo.X);
-            addLog(`Player ${currentPlayer.id} replaced the card in Process Echo X. Old card moved to discard.`);
-          }
-          echo.X = selectedCard;
-          currentPlayer.hand.splice(state.selectedCardHandIndex, 1);
-          addLog(`Player ${currentPlayer.id} stored ${CARD_LIBRARY[selectedCard.cardId].cardName} in Process Echo X.`);
-          clearSelection();
-          renderUI();
+          dispatch({
+            type: 'PROCESS_ECHO_STORE',
+            slot: 'X',
+            handIndex: state.selectedCardHandIndex,
+          });
           return;
         }
 
         if (!hasCard) {
-          addLog(`Process Echo slot ${slot} is empty.`);
+          logHint(`Process Echo slot ${slot} is empty.`);
           return;
         }
         if (currentPlayer.processEchoPlayedThisTurn) {
-          addLog('You can play only one card from Process Echo per turn.');
+          logHint('You can play only one card from Process Echo per turn.');
           return;
         }
         const level = Number.parseInt(slot, 10);
         if (!Number.isFinite(level) || level < 1 || level > 3) {
-          addLog('This Process Echo slot is not playable yet.');
+          logHint('This Process Echo slot is not playable yet.');
           return;
         }
         if (!slotCard) {
@@ -1777,7 +1714,7 @@ export function renderProcessEchoPanels(currentPlayer: Player): void {
           state.pendingShieldingLevel = null;
           state.pendingShieldingSourceSlot = null;
         } else {
-          addLog('This Process Echo card cannot be played.');
+          logHint('This Process Echo card cannot be played.');
           return;
         }
         state.selectedCardHandIndex = null;

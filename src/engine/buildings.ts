@@ -16,8 +16,7 @@ import {
   clearSelection,
   canPlayerDirectlyTargetUnit
 } from '../utils.ts';
-import { renderUI, syncBoardVisualState } from '../bridge.ts';
-import { addLog } from '../ui/log.ts';
+import { renderUI, syncBoardVisualState, addLog, emit } from '../shared/events.ts';
 import {
   getUnitCurrentMoveRange,
   isUnitPlanted,
@@ -36,6 +35,7 @@ import {
   createStatusInstance,
   rollBuildingDraftStatuses
 } from './cards.ts';
+import { setEnergy, setSupply } from './playerResources.ts';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -288,10 +288,9 @@ export function activateFoundationTargeting(): void {
   renderUI();
 }
 
-export function confirmFoundationUse(): void {
+export function executeFoundationConfirm(targetBuildingId: string): void {
   const currentPlayer = getCurrentPlayer();
-  const targetBuildingId = state.pendingFoundationTargetBuildingId;
-  const targetBuilding = targetBuildingId ? getBuildingById(currentPlayer.id, targetBuildingId) : null;
+  const targetBuilding = getBuildingById(currentPlayer.id, targetBuildingId);
   if (!targetBuilding) {
     addLog('Selected building is no longer available.');
     clearSelection();
@@ -306,10 +305,11 @@ export function confirmFoundationUse(): void {
     return;
   }
 
-  currentPlayer.supply -= foundationCost;
+  setSupply(currentPlayer, currentPlayer.supply - foundationCost);
 
   // 1) Remove all building abilities by removing the building from player's building list.
   currentPlayer.buildings = currentPlayer.buildings.filter((building: Building) => building.id !== targetBuilding.id);
+  emit({ type: 'BUILDING_DESTROYED', buildingId: targetBuilding.id });
   // 2) Remove adjacency bonuses provided by destroyed building to adjacent building drone cards.
   refreshAdjacencyBonusesForPlayerCards(currentPlayer.id);
   // Keep other derived caps in sync after building removal (e.g., Datacenter bonus).
@@ -322,7 +322,7 @@ export function confirmFoundationUse(): void {
   // 7) Refund 50% of destroyed building supply cost.
   const destroyedSupplyCost = getBuildingSupplyCostByType(targetBuilding.type as BuildingType);
   const refund = Math.floor(destroyedSupplyCost * 0.5);
-  currentPlayer.supply += refund;
+  setSupply(currentPlayer, currentPlayer.supply + refund);
 
   addLog(
     `Foundation destroyed ${getBuildingDisplayName(targetBuilding)}. Refunded ${refund} Supply and increased Player ${currentPlayer.id} base HP cap by 5.`
@@ -331,6 +331,22 @@ export function confirmFoundationUse(): void {
   clearSelection();
   syncBoardVisualState();
   renderUI();
+}
+
+/**
+ * Backwards-compat wrapper: reads pendingFoundationTargetBuildingId out of
+ * state and delegates. Used by call sites that haven't been migrated to
+ * the FOUNDATION_CONFIRM action yet.
+ */
+export function confirmFoundationUse(): void {
+  const targetBuildingId = state.pendingFoundationTargetBuildingId;
+  if (!targetBuildingId) {
+    addLog('Selected building is no longer available.');
+    clearSelection();
+    renderUI();
+    return;
+  }
+  executeFoundationConfirm(targetBuildingId);
 }
 
 // ---------------------------------------------------------------------------
@@ -366,6 +382,7 @@ export function createBuilding(owner: PlayerId, buildingType: BuildingType | str
   };
 
   player.buildings.push(building);
+  emit({ type: 'BUILDING_PLACED', building });
   refreshAdjacencyBonusesForPlayerCards(owner);
   refreshPlayerMaxEnergy(owner, true);
   return building;
@@ -393,7 +410,7 @@ export function activateArmoryProduction(buildingId: string): void {
     return;
   }
 
-  currentPlayer.supply -= supplyCost;
+  setSupply(currentPlayer, currentPlayer.supply - supplyCost);
   const producedAt = getBuildingDisplayName(building);
   const grantedStatusIds = getBuildingGrantedStatusIds(building);
   const createdCard: Card = {
@@ -429,7 +446,7 @@ export function activateReplicatorProduction(buildingId: string): void {
     return;
   }
 
-  currentPlayer.supply -= supplyCost;
+  setSupply(currentPlayer, currentPlayer.supply - supplyCost);
   const producedAt = getBuildingDisplayName(building);
   const grantedStatusIds = getBuildingGrantedStatusIds(building);
   const createdCard: Card = {
@@ -465,7 +482,7 @@ export function activateWorkshopProduction(buildingId: string): void {
     return;
   }
 
-  currentPlayer.supply -= supplyCost;
+  setSupply(currentPlayer, currentPlayer.supply - supplyCost);
   const producedAt = getBuildingDisplayName(building);
   const grantedStatusIds = getBuildingGrantedStatusIds(building);
   const createdCard: Card = {
@@ -499,11 +516,11 @@ export function activateDatacenterObtain(buildingId: string): void {
     return;
   }
 
-  currentPlayer.energy -= energyCost;
+  setEnergy(currentPlayer, currentPlayer.energy - energyCost);
   building.obtainUsedThisTurn = true;
   const hasAdjacentWorkshop = isWorkshopAdjacentToDatacenter(currentPlayer.id, building.id);
   const gainedSupply = hasAdjacentWorkshop ? 8 : 5;
-  currentPlayer.supply += gainedSupply;
+  setSupply(currentPlayer, currentPlayer.supply + gainedSupply);
   addLog(
     `Player ${currentPlayer.id} used Obtain (${getBuildingDisplayName(building)}) and gained ${gainedSupply} Supply.`
   );
@@ -529,7 +546,7 @@ export function activateDatacenterProduction(buildingId: string): void {
     addLog('Not enough Supply to create a Specialist card.');
     return;
   }
-  currentPlayer.supply -= supplyCost;
+  setSupply(currentPlayer, currentPlayer.supply - supplyCost);
   const createdCard = createProducedDroneCardFromBuilding(currentPlayer.id, building, CARD_LIBRARY.SPECIALIST.id);
   currentPlayer.deck.push(createdCard);
   building.createSpecialistCooldown = 1;
@@ -578,7 +595,7 @@ export function activateGearStationProduction(buildingId: string): void {
     addLog('Not enough Supply to create a Ghostblade card.');
     return;
   }
-  currentPlayer.supply -= supplyCost;
+  setSupply(currentPlayer, currentPlayer.supply - supplyCost);
   const createdCard = createProducedDroneCardFromBuilding(currentPlayer.id, building, CARD_LIBRARY.CREATE_GHOSTBLADE.id);
   currentPlayer.deck.push(createdCard);
   building.createGhostbladeCooldown = 1;
@@ -601,7 +618,7 @@ export function activateAssemblyLineDraw(buildingId: string): void {
     addLog('No cards available to draw.');
     return;
   }
-  currentPlayer.energy -= energyCost;
+  setEnergy(currentPlayer, currentPlayer.energy - energyCost);
   drawCards(currentPlayer, 1);
   addLog(`Player ${currentPlayer.id} used Draw (${getBuildingDisplayName(building)}) and drew 1 card.`);
   renderUI();
@@ -626,7 +643,7 @@ export function activateAssemblyLineProduction(buildingId: string): void {
     addLog('Not enough Supply to create an Artillery card.');
     return;
   }
-  currentPlayer.supply -= supplyCost;
+  setSupply(currentPlayer, currentPlayer.supply - supplyCost);
   const createdCard = createProducedDroneCardFromBuilding(currentPlayer.id, building, CARD_LIBRARY.ARTILLERY.id);
   currentPlayer.deck.push(createdCard);
   building.createArtilleryCooldown = 1;
@@ -659,13 +676,19 @@ export function activateBuildingUpgrade(buildingId: string): void {
     const alreadyGranted = new Set(getBuildingGrantedStatusIds(building));
     const options = (BUILDING_PERK_DRAFT_POOL[building.type] ?? []).filter((statusId: StatusId) => !alreadyGranted.has(statusId)).slice(0, 8);
     if (options.length === 0) {
-      currentPlayer.supply -= upgradeCost;
+      setSupply(currentPlayer, currentPlayer.supply - upgradeCost);
       building.upgraded = true;
+      emit({
+        type: 'BUILDING_UPGRADED',
+        buildingId: building.id,
+        upgradeStatusIds: building.upgradeStatusIds ?? [],
+        upgraded: true,
+      });
       addLog(`Player ${currentPlayer.id} upgraded ${getBuildingDisplayName(building)} for ${upgradeCost} Supply.`);
       renderUI();
       return;
     }
-    state.mode = 'building_upgrade_selection';
+    state.mode = 'building_upgrade_status_pick';
     state.pendingUpgradeBuildingId = building.id;
     state.pendingUpgradeStatusId = null;
     state.pendingUpgradeStatusOptions = options;
@@ -673,19 +696,20 @@ export function activateBuildingUpgrade(buildingId: string): void {
     return;
   }
 
-  currentPlayer.supply -= upgradeCost;
+  setSupply(currentPlayer, currentPlayer.supply - upgradeCost);
   building.upgraded = true;
+  emit({
+    type: 'BUILDING_UPGRADED',
+    buildingId: building.id,
+    upgradeStatusIds: building.upgradeStatusIds ?? [],
+    upgraded: true,
+  });
   addLog(`Player ${currentPlayer.id} upgraded ${getBuildingDisplayName(building)} for ${upgradeCost} Supply.`);
   renderUI();
 }
 
-export function confirmBuildingUpgradeStatusSelection(): void {
+export function executeConfirmBuildingUpgrade(buildingId: string, selectedStatusId: StatusId): void {
   const currentPlayer = getCurrentPlayer();
-  const buildingId = state.pendingUpgradeBuildingId;
-  const selectedStatusId = state.pendingUpgradeStatusId;
-  if (!buildingId || !selectedStatusId) {
-    return;
-  }
   const building = currentPlayer.buildings.find((candidate: Building) => candidate.id === buildingId);
   if (!building) {
     clearSelection();
@@ -709,7 +733,7 @@ export function confirmBuildingUpgradeStatusSelection(): void {
     addLog('Selected upgrade status is not valid.');
     return;
   }
-  currentPlayer.supply -= upgradeCost;
+  setSupply(currentPlayer, currentPlayer.supply - upgradeCost);
   building.upgraded = true;
   if (!building.upgradeStatusIds) {
     building.upgradeStatusIds = [];
@@ -718,6 +742,12 @@ export function confirmBuildingUpgradeStatusSelection(): void {
     building.upgradeStatusIds.push(selectedStatusId);
     applyBuildingStatusUpgradeToExistingCards(currentPlayer.id, building.id, selectedStatusId);
   }
+  emit({
+    type: 'BUILDING_UPGRADED',
+    buildingId: building.id,
+    upgradeStatusIds: building.upgradeStatusIds,
+    upgraded: true,
+  });
   refreshAdjacencyBonusesForPlayerCards(currentPlayer.id);
   addLog(
     `Player ${currentPlayer.id} upgraded ${getBuildingDisplayName(building)} for ${upgradeCost} Supply and added ${DRONE_STATUS_LIBRARY[selectedStatusId]?.statusName ?? selectedStatusId}.`
@@ -727,6 +757,18 @@ export function confirmBuildingUpgradeStatusSelection(): void {
   state.pendingUpgradeStatusId = null;
   state.pendingUpgradeStatusOptions = [];
   renderUI();
+}
+
+/**
+ * Backwards-compat wrapper: reads pendingUpgradeBuildingId / pendingUpgradeStatusId
+ * out of state and calls the parameterised entry point. Used by code paths
+ * that haven't yet been migrated to dispatch a self-contained action.
+ */
+export function confirmBuildingUpgradeStatusSelection(): void {
+  const buildingId = state.pendingUpgradeBuildingId;
+  const selectedStatusId = state.pendingUpgradeStatusId;
+  if (!buildingId || !selectedStatusId) return;
+  executeConfirmBuildingUpgrade(buildingId, selectedStatusId);
 }
 
 // ---------------------------------------------------------------------------
@@ -766,7 +808,7 @@ export function confirmArmoryBuildPlacement(): void {
     return;
   }
 
-  currentPlayer.supply -= armoryCard.supplyCost;
+  setSupply(currentPlayer, currentPlayer.supply - armoryCard.supplyCost);
   const building = createBuilding(currentPlayer.id, armoryCard.buildingType, squareKey, {
     assignedStatusId: statusId
   });
@@ -816,7 +858,7 @@ export function confirmReplicatorBuildPlacement(): void {
     return;
   }
 
-  currentPlayer.supply -= replicatorCard.supplyCost;
+  setSupply(currentPlayer, currentPlayer.supply - replicatorCard.supplyCost);
   const building = createBuilding(currentPlayer.id, replicatorCard.buildingType, squareKey, {
     assignedStatusId: statusId
   });
@@ -868,7 +910,7 @@ export function confirmWorkshopBuildPlacement(): void {
     return;
   }
 
-  currentPlayer.supply -= workshopCard.supplyCost;
+  setSupply(currentPlayer, currentPlayer.supply - workshopCard.supplyCost);
   const building = createBuilding(currentPlayer.id, workshopCard.buildingType, squareKey, {
     assignedStatusId: statusId
   });
@@ -917,7 +959,7 @@ export function confirmDatacenterBuildPlacement(): void {
     return;
   }
 
-  currentPlayer.supply -= datacenterCard.supplyCost;
+  setSupply(currentPlayer, currentPlayer.supply - datacenterCard.supplyCost);
   const building = createBuilding(currentPlayer.id, datacenterCard.buildingType, squareKey, {
     assignedStatusId: statusId
   });
@@ -962,7 +1004,7 @@ export function confirmGearStationBuildPlacement(): void {
     return;
   }
 
-  currentPlayer.supply -= card.supplyCost;
+  setSupply(currentPlayer, currentPlayer.supply - card.supplyCost);
   const building = createBuilding(currentPlayer.id, card.buildingType, squareKey, {
     assignedStatusId: statusId
   });
@@ -1006,7 +1048,7 @@ export function confirmAssemblyLineBuildPlacement(): void {
     return;
   }
 
-  currentPlayer.supply -= card.supplyCost;
+  setSupply(currentPlayer, currentPlayer.supply - card.supplyCost);
   const building = createBuilding(currentPlayer.id, card.buildingType, squareKey, {
     assignedStatusId: statusId
   });
@@ -1016,6 +1058,173 @@ export function confirmAssemblyLineBuildPlacement(): void {
   state.pendingAssemblyLineSquareKey = null;
   state.pendingAssemblyLineStatusId = null;
   addLog(`Player ${currentPlayer.id} built ${getBuildingDisplayName(building)} on ${squareKey}.`);
+  syncBoardVisualState();
+  renderUI();
+}
+
+// ---------------------------------------------------------------------------
+// Unified building activation — routes by building.type + ability slot.
+// Single entry point for the ACTIVATE_BUILDING action.
+// ---------------------------------------------------------------------------
+
+export type BuildingAbility = 'production' | 'overload' | 'obtain' | 'draw' | 'upgrade';
+
+export function executeActivateBuilding(buildingId: string, ability: BuildingAbility): void {
+  const currentPlayer = getCurrentPlayer();
+  const building = currentPlayer.buildings.find((b: Building) => b.id === buildingId);
+  if (!building) {
+    addLog('Building not found.');
+    return;
+  }
+
+  if (ability === 'upgrade') {
+    activateBuildingUpgrade(buildingId);
+    return;
+  }
+  if (ability === 'overload') {
+    if (building.type !== 'GEAR_STATION') return;
+    activateGearStationOverload(buildingId);
+    return;
+  }
+  if (ability === 'obtain') {
+    if (building.type !== 'DATACENTER') return;
+    activateDatacenterObtain(buildingId);
+    return;
+  }
+  if (ability === 'draw') {
+    if (building.type !== 'ASSEMBLY_LINE') return;
+    activateAssemblyLineDraw(buildingId);
+    return;
+  }
+  if (ability === 'production') {
+    switch (building.type) {
+      case 'ARMORY': activateArmoryProduction(buildingId); return;
+      case 'REPLICATOR': activateReplicatorProduction(buildingId); return;
+      case 'WORKSHOP': activateWorkshopProduction(buildingId); return;
+      case 'DATACENTER': activateDatacenterProduction(buildingId); return;
+      case 'GEAR_STATION': activateGearStationProduction(buildingId); return;
+      case 'ASSEMBLY_LINE': activateAssemblyLineProduction(buildingId); return;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Unified placement: handles all six status-pick buildings (Armory,
+// Replicator, Workshop, Datacenter, Gear Station, Assembly Line). The
+// per-building confirmXBuildPlacement functions remain for now as thin
+// wrappers but the reducer routes through this single entry point.
+// ---------------------------------------------------------------------------
+
+const BUILD_CARD_BY_TYPE: Record<string, { id: BuildingType; supplyCost: number; buildingType: BuildingType } | undefined> = {
+  ARMORY: BUILD_CARD_LIBRARY.ARMORY,
+  REPLICATOR: BUILD_CARD_LIBRARY.REPLICATOR,
+  WORKSHOP: BUILD_CARD_LIBRARY.WORKSHOP,
+  DATACENTER: BUILD_CARD_LIBRARY.DATACENTER,
+  GEAR_STATION: BUILD_CARD_LIBRARY.GEAR_STATION,
+  ASSEMBLY_LINE: BUILD_CARD_LIBRARY.ASSEMBLY_LINE,
+  FOUNDATION: BUILD_CARD_LIBRARY.FOUNDATION,
+};
+
+function clearAllPendingBuildState(): void {
+  state.mode = 'idle';
+  state.placingBuildingType = null;
+  state.pendingArmorySquareKey = null;
+  state.pendingArmoryStatusId = null;
+  state.pendingArmoryDraftStatusIds = [];
+  state.pendingReplicatorSquareKey = null;
+  state.pendingReplicatorStatusId = null;
+  state.pendingWorkshopSquareKey = null;
+  state.pendingWorkshopStatusId = null;
+  state.pendingDatacenterSquareKey = null;
+  state.pendingDatacenterStatusId = null;
+  state.pendingGearStationSquareKey = null;
+  state.pendingGearStationStatusId = null;
+  state.pendingAssemblyLineSquareKey = null;
+  state.pendingAssemblyLineStatusId = null;
+}
+
+export function executeConfirmBuildingPlacement(
+  buildingType: BuildingType,
+  squareKey: string,
+  statusId: StatusId,
+): void {
+  const card = BUILD_CARD_BY_TYPE[buildingType];
+  if (!card) {
+    addLog(`Unknown building type: ${buildingType}.`);
+    return;
+  }
+  if (!DRONE_STATUS_LIBRARY[statusId]) {
+    addLog('Select a Drone Status before confirming the build.');
+    return;
+  }
+
+  const currentPlayer = getCurrentPlayer();
+  if (currentPlayer.supply < card.supplyCost) {
+    addLog('Not enough Supply to build this structure.');
+    clearSelection();
+    renderUI();
+    return;
+  }
+  if (!isPlayerBaseSquare(currentPlayer.id, squareKey)) {
+    addLog('Building can only be placed on your base squares.');
+    clearSelection();
+    renderUI();
+    return;
+  }
+  const square = fromSquareKey(squareKey);
+  if (getUnitAt(square.x, square.z) || getBuildingAtSquare(currentPlayer.id, squareKey)) {
+    addLog('Selected base square is no longer available.');
+    clearSelection();
+    renderUI();
+    return;
+  }
+
+  setSupply(currentPlayer, currentPlayer.supply - card.supplyCost);
+  const building = createBuilding(currentPlayer.id, card.buildingType, squareKey, {
+    assignedStatusId: statusId,
+  });
+  currentPlayer.buildingsPlayedThisTurn += 1;
+  clearAllPendingBuildState();
+  addLog(`Player ${currentPlayer.id} built ${getBuildingDisplayName(building)} on ${squareKey}.`);
+  syncBoardVisualState();
+  renderUI();
+}
+
+// Direct-place (no status pick) — currently only Foundation, but parametrised
+// in case more zero-status buildings appear.
+export function executePlayBuildCard(buildingType: BuildingType, targetSquareKey: string): void {
+  const card = BUILD_CARD_BY_TYPE[buildingType];
+  if (!card) {
+    addLog(`Unknown building type: ${buildingType}.`);
+    return;
+  }
+  const currentPlayer = getCurrentPlayer();
+  if (currentPlayer.supply < card.supplyCost) {
+    addLog('Not enough Supply to build this structure.');
+    return;
+  }
+  if (!isPlayerBaseSquare(currentPlayer.id, targetSquareKey)) {
+    addLog('Building can only be placed on your base squares.');
+    return;
+  }
+  const square = fromSquareKey(targetSquareKey);
+  if (getUnitAt(square.x, square.z) || getBuildingAtSquare(currentPlayer.id, targetSquareKey)) {
+    addLog('Selected base square is no longer available.');
+    return;
+  }
+
+  setSupply(currentPlayer, currentPlayer.supply - card.supplyCost);
+  const building = createBuilding(currentPlayer.id, card.buildingType, targetSquareKey);
+  currentPlayer.buildingsPlayedThisTurn += 1;
+  state.mode = 'idle';
+  state.placingBuildingType = null;
+  addLog(`Player ${currentPlayer.id} built ${getBuildingDisplayName(building)} on ${targetSquareKey}.`);
+  syncBoardVisualState();
+  renderUI();
+}
+
+export function executeCancelBuildingPlacement(): void {
+  clearAllPendingBuildState();
   syncBoardVisualState();
   renderUI();
 }
@@ -1032,20 +1241,21 @@ interface HitUserData {
   };
 }
 
-export function handleOverloadTargetClick(hit: HitUserData): void {
+/**
+ * State-mutation core for the Overload target. Validates building +
+ * target, spends energy, applies the movement bonus. Called from both
+ * the legacy handler (handleOverloadTargetClick) and the reducer's
+ * GEAR_STATION_OVERLOAD_TARGET case.
+ */
+export function executeGearStationOverloadTarget(buildingId: string, targetUnitId: string): void {
   const currentPlayer = getCurrentPlayer();
-  const buildingId = state.overloadTargetingBuildingId;
   const building = currentPlayer.buildings.find((candidate: Building) => candidate.id === buildingId);
   if (!building || building.type !== 'GEAR_STATION') {
     clearSelection();
     renderUI();
     return;
   }
-  if (hit.userData.type !== 'unit') {
-    addLog('Select a friendly drone target for Overload.');
-    return;
-  }
-  const target = getUnitById(hit.userData.unitId!);
+  const target = getUnitById(targetUnitId);
   if (!canTargetUnitWithOverload(target)) {
     addLog('This drone is not a valid Overload target.');
     return;
@@ -1062,23 +1272,39 @@ export function handleOverloadTargetClick(hit: HitUserData): void {
     renderUI();
     return;
   }
-
   const movementGain = getOverloadBaseMoveForUnit(target);
   if (movementGain <= 0) {
     addLog('This drone cannot receive movement from Overload.');
     return;
   }
 
-  currentPlayer.energy -= 5;
+  setEnergy(currentPlayer, currentPlayer.energy - 5);
   building.overloadUsedThisTurn = true;
   target!.overloadBonusMovementThisTurn = (target!.overloadBonusMovementThisTurn ?? 0) + movementGain;
   addLog(
-    `Player ${currentPlayer.id} used Overload (${getBuildingDisplayName(building)}) on ${target!.unitName}: +${movementGain} Movement this turn.`
+    `Player ${currentPlayer.id} used Overload (${getBuildingDisplayName(building)}) on ${target!.unitName}: +${movementGain} Movement this turn.`,
   );
   state.mode = 'idle';
   state.overloadTargetingBuildingId = null;
   syncBoardVisualState();
   renderUI();
+}
+
+export function handleOverloadTargetClick(hit: HitUserData): void {
+  const buildingId = state.overloadTargetingBuildingId;
+  if (!buildingId) {
+    clearSelection();
+    renderUI();
+    return;
+  }
+  if (hit.userData.type !== 'unit') {
+    addLog('Select a friendly drone target for Overload.');
+    return;
+  }
+  // Input layer hands the validated targetUnitId to the engine.
+  const targetId = hit.userData.unitId;
+  if (!targetId) return;
+  executeGearStationOverloadTarget(buildingId, targetId);
 }
 
 // ---------------------------------------------------------------------------
