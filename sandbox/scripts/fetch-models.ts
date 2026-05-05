@@ -101,6 +101,10 @@ const QUERIES: Query[] = [
   { slug: 'tribrute',     query: 'monster',                             maxFaces: 80000, animated: true,
                           preferUid: '71cc330a586441d985a95c08bea6a510' },
 
+  // Flying enemy on the THIRD asteroid. Clips: Idle / FastFly / Attack2 / Death1 / Death2.
+  { slug: 'bat',          query: 'dark bat',                            maxFaces: 60000, animated: true,
+                          preferUid: 'aaf83921207b4c13b1f30649b5225af5' },
+
   // (kept for potential future reuse, but the minimal scene only needs the three above)
   { slug: 'tree',     query: 'low poly tree',           maxFaces: 8000, excludeUids: EXCLUDE_TREE },
   { slug: 'mushroom', query: 'low poly mushroom',       maxFaces: 6000 },

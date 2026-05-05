@@ -198,5 +198,15 @@
     "source": "https://sketchfab.com/3d-models/monster-71cc330a586441d985a95c08bea6a510",
     "faceCount": 5802,
     "bytes": 1348232
+  },
+  {
+    "slug": "bat",
+    "uid": "aaf83921207b4c13b1f30649b5225af5",
+    "name": "Dark Bat",
+    "author": "Kolbaca",
+    "license": "CC Attribution",
+    "source": "https://sketchfab.com/3d-models/dark-bat-aaf83921207b4c13b1f30649b5225af5",
+    "faceCount": 4370,
+    "bytes": 2222248
   }
 ]

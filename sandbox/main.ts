@@ -67,7 +67,7 @@ const FLIER_SPAWN_FRACTION = 0.35; // ~35% of trickle-spawns are fliers
 const PROJECTILE_HIT_DIST = 1.4; // player gets hit if a projectile passes within
 // HP per kind. Walkers tankier than fliers.
 const WALKER_MAX_HP = 4;
-const FLIER_MAX_HP = 2;
+const FLIER_MAX_HP = 1;  // one-shot kill
 
 const MODEL_BASE = '/sandbox/models/';
 
@@ -348,7 +348,7 @@ async function loadFarAsteroid(): Promise<void> {
   const maxDim = Math.max(size.x, size.y, size.z) || 1;
 
   // Roughly half the playable asteroid's diameter.
-  const targetDiameter = TARGET_PLANET_DIAMETER * 0.55;
+  const targetDiameter = TARGET_PLANET_DIAMETER * 0.55 * 1.25;
   const scale = targetDiameter / maxDim;
 
   // Slightly tint darker so it reads as "distant".
@@ -681,6 +681,7 @@ function startJump(): void {
   if (isJumping) return;
   const aimed = getAimedRing();
   if (!aimed) return;
+  playJump();
   jumpStart.copy(player.position);
   jumpEnd.copy(aimed.centre);
   pendingDestWorld = aimed.worldId;
@@ -760,10 +761,10 @@ function tickJump(dt: number): boolean {
   const eyeUp = player.position.clone().sub(_gravNow).normalize();
   camera.position.copy(player.position).addScaledVector(eyeUp, EYE_HEIGHT);
   camera.up.copy(eyeUp);
-  // Build the surface-tangent basis at the current eyeUp.
-  let ref = new THREE.Vector3(0, 0, 1);
-  if (Math.abs(ref.dot(eyeUp)) > 0.95) ref = new THREE.Vector3(1, 0, 0);
-  const t1b = ref.clone().sub(eyeUp.clone().multiplyScalar(ref.dot(eyeUp))).normalize();
+  // Build the surface-tangent basis at the current eyeUp using the same
+  // hysteretic ref selector as tickPlayer to keep the camera basis stable.
+  const t1b = new THREE.Vector3();
+  buildStableTangent(eyeUp, t1b);
   const t2b = new THREE.Vector3().crossVectors(eyeUp, t1b).normalize();
   // Override yaw each frame so forward chases the destination. Without
   // this, the (t1b, t2b) basis rotates as eyeUp tilts mid-arc and the
@@ -897,13 +898,29 @@ function findGroundOnObject(
   const rel = pos.clone().sub(centre);
   if (rel.lengthSq() < 1e-6) return null;
   const up = rel.normalize();
-  const ro = centre.clone().addScaledVector(up, asteroidBoundingRadius * 2.5);
+  // Primary: ray from way outside in `up` direction back toward the centre.
+  const ro = centre.clone().addScaledVector(up, asteroidBoundingRadius * 4);
   const rd = up.clone().negate();
   asteroidRaycaster.set(ro, rd);
-  asteroidRaycaster.far = asteroidBoundingRadius * 5;
-  const hits = asteroidRaycaster.intersectObject(mesh, true);
-  if (!hits[0]) return null;
-  return { point: hits[0].point.clone(), up };
+  asteroidRaycaster.far = asteroidBoundingRadius * 8;
+  let hits = asteroidRaycaster.intersectObject(mesh, true);
+  if (hits[0]) return { point: hits[0].point.clone(), up };
+  // Fallback A: ray from the player's own position toward the centre.
+  // Catches cases where the player has slipped just past a concavity edge
+  // and the "above" raycast finds a different lobe instead of their feet.
+  asteroidRaycaster.set(pos, rd);
+  asteroidRaycaster.far = pos.distanceTo(centre) + asteroidBoundingRadius * 2;
+  hits = asteroidRaycaster.intersectObject(mesh, true);
+  if (hits[0]) return { point: hits[0].point.clone(), up };
+  // Fallback B: ray from centre outward toward the player — useful when
+  // they're INSIDE the mesh and the inward-pointing rays miss front faces.
+  const roOut = centre.clone();
+  asteroidRaycaster.set(roOut, up);
+  asteroidRaycaster.far = asteroidBoundingRadius * 8;
+  hits = asteroidRaycaster.intersectObject(mesh, true);
+  if (hits[0]) return { point: hits[0].point.clone(), up };
+  console.warn('[ground] raycast missed all 3 directions on', mesh.name || mesh.uuid.slice(0, 8));
+  return null;
 }
 
 function findGroundApprox(pos: THREE.Vector3): { point: THREE.Vector3; up: THREE.Vector3 } | null {
@@ -1173,13 +1190,108 @@ function refreshHpHud(): void {
   refreshXpHud();
 }
 
+// --- audio (procedural SFX via Web Audio API) -----------------------------
+//
+// All effects are synthesised on the fly — no asset files required, just a
+// few oscillators and a noise burst. Toggle with `M`.
+
+let _audioCtx: AudioContext | null = null;
+let _masterGain: GainNode | null = null;
+let _soundOn = false;
+
+function audio(): { ctx: AudioContext; master: GainNode } | null {
+  if (!_soundOn) return null;
+  // Lazy-init on first use so the AudioContext is created in response to a
+  // user gesture (browsers block context creation otherwise).
+  if (!_audioCtx) {
+    try {
+      _audioCtx = new AudioContext();
+      _masterGain = _audioCtx.createGain();
+      _masterGain.gain.value = 0.6;
+      _masterGain.connect(_audioCtx.destination);
+    } catch {
+      _soundOn = false;
+      return null;
+    }
+  }
+  return { ctx: _audioCtx, master: _masterGain! };
+}
+
+function sfxTone(freq: number, durSec: number, type: OscillatorType = 'sine', volume: number = 0.3, freqEnd?: number): void {
+  const a = audio();
+  if (!a) return;
+  const { ctx, master } = a;
+  const now = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, now);
+  if (freqEnd !== undefined) osc.frequency.exponentialRampToValueAtTime(Math.max(1, freqEnd), now + durSec);
+  gain.gain.setValueAtTime(0, now);
+  gain.gain.linearRampToValueAtTime(volume, now + 0.005);
+  gain.gain.exponentialRampToValueAtTime(0.001, now + durSec);
+  osc.connect(gain).connect(master);
+  osc.start(now);
+  osc.stop(now + durSec + 0.05);
+}
+
+function sfxNoise(durSec: number, volume: number = 0.2, lowPassHz?: number): void {
+  const a = audio();
+  if (!a) return;
+  const { ctx, master } = a;
+  const now = ctx.currentTime;
+  const samples = Math.max(1, Math.floor(ctx.sampleRate * durSec));
+  const buffer = ctx.createBuffer(1, samples, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < samples; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / samples);
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+  const gain = ctx.createGain();
+  gain.gain.value = volume;
+  let chain: AudioNode = src;
+  if (lowPassHz !== undefined) {
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = lowPassHz;
+    src.connect(filter);
+    chain = filter;
+  }
+  chain.connect(gain).connect(master);
+  src.start(now);
+}
+
+function playShoot():     void { sfxNoise(0.08, 0.35, 1200); sfxTone(70,  0.06, 'sawtooth', 0.4, 35); }
+function playHit():       void { sfxTone(220, 0.06, 'square',   0.18, 110); }
+function playHeadshot():  void { sfxTone(880, 0.05, 'square',   0.25); sfxTone(660, 0.10, 'square', 0.18); }
+function playDamage():    void { sfxNoise(0.18, 0.45, 350); sfxTone(110, 0.15, 'sawtooth', 0.25, 60); }
+function playPickup():    void {
+  sfxTone(523.25, 0.07, 'sine', 0.3);
+  setTimeout(() => sfxTone(659.25, 0.07, 'sine', 0.3),  70);
+  setTimeout(() => sfxTone(783.99, 0.14, 'sine', 0.3), 140);
+}
+function playLevelUp():   void {
+  [261.63, 329.63, 392.00, 523.25].forEach((f, i) =>
+    setTimeout(() => sfxTone(f, 0.30, 'triangle', 0.3), i * 90));
+}
+function playDeath():     void { sfxTone(440, 1.2, 'sawtooth', 0.4, 60); }
+function playJump():      void { sfxTone(220, 0.4, 'sine', 0.25, 660); }
+function playMonsterDie(): void { sfxNoise(0.20, 0.30, 600); sfxTone(180, 0.18, 'sawtooth', 0.2, 60); }
+
+window.addEventListener('keydown', (e) => {
+  if (e.code !== 'KeyM') return;
+  _soundOn = !_soundOn;
+  console.log(`[sound] ${_soundOn ? 'ON' : 'OFF'}`);
+});
+
 function damagePlayer(amount: number = 1): void {
   if (playerDead) return;
   flashDamage();
+  playDamage();
   playerHp = Math.max(0, playerHp - amount);
   refreshHpHud();
   if (playerHp === 0) {
     playerDead = true;
+    playDeath();
     deathEl.style.opacity = '1';
     deathEl.style.pointerEvents = 'auto';
     if (document.pointerLockElement) document.exitPointerLock();
@@ -1268,6 +1380,7 @@ function checkLevelUp(): void {
   }
   if (newLevel <= currentLevel) return;
   currentLevel = newLevel;
+  playLevelUp();
   // +3 HP per level up (capped at max).
   const before = playerHp;
   playerHp = Math.min(PLAYER_MAX_HP, playerHp + 3);
@@ -1513,6 +1626,7 @@ function tickHpPickups(dt: number): void {
         playerHp = Math.min(PLAYER_MAX_HP, playerHp + 1);
         refreshXpHud();
         spawnHpPopup(p.group.position);
+        playPickup();
       }
       despawnHpPickup(p, i);
     }
@@ -1527,6 +1641,7 @@ function awardXp(m: Monster, hitPoint: THREE.Vector3, headshot: boolean = false)
   if (m.kind === 'flier') fliersKilled++;
   else                    walkersKilled++;
   if (headshot) headshotKills++;
+  if (headshot) playHeadshot(); else playMonsterDie();
   refreshXpHud();
   spawnXpPopup(hitPoint, reward);
   checkLevelUp();
@@ -1754,6 +1869,7 @@ interface Monster {
    */
   position: THREE.Vector3;
   alive: boolean;
+  bodyAnchor: THREE.Object3D | null;
 }
 
 const monsters: Monster[] = [];
@@ -1897,6 +2013,7 @@ interface Spider {
   hpBarCanvas: HTMLCanvasElement;
   hpBarTexture: THREE.CanvasTexture;
   hpRatioDrawn: number;
+  bodyAnchor: THREE.Object3D | null;     // bone driving the visible body, for HP bar tracking
 }
 
 const SPIDER_HEIGHT          = 3.2;   // bigger spiders — easier to spot/aim
@@ -1968,9 +2085,10 @@ function spawnSpider(dir: THREE.Vector3): void {
   wrap.position.copy(surfPoint);
   wrap.up.copy(up);
   wrap.traverse(c => { c.visible = true; c.frustumCulled = false; });
-  // Big animation extents (lunge pose) → expand the cached SkinnedMesh
-  // bounding sphere so bullets don't pass through animated spiders.
-  relaxSkinnedRaycastBounds(wrap, 3);
+  // Per-instance: huge raycast bounding sphere so animated meshes don't
+  // pass under bullets due to broad-phase rejection.
+  relaxSkinnedRaycastBounds(wrap);
+  const bodyAnchor = findBodyAnchor(inst);
   scene.add(wrap);
 
   const mixer = new THREE.AnimationMixer(inst);
@@ -2001,6 +2119,7 @@ function spawnSpider(dir: THREE.Vector3): void {
     maxHp: SPIDER_MAX_HP,
     alive: true,
     hpBar, hpBarCanvas, hpBarTexture, hpRatioDrawn: 1,
+    bodyAnchor,
   });
   spidersSpawnedTotal++;
 }
@@ -2166,9 +2285,13 @@ function tickSpiderHpBar(s: Spider, decorPos: THREE.Vector3, camPos: THREE.Vecto
     s.hpBarTexture.needsUpdate = true;
     s.hpRatioDrawn = ratio;
   }
-  // Position above the spider's head along the local "up" (relative to decor).
-  const up = s.position.clone().sub(decorPos).normalize();
-  s.hpBar.position.copy(s.position).addScaledVector(up, SPIDER_HEIGHT + 0.4);
+  // Anchor on the rig's body bone if available — the wrap.position can drift
+  // away from the rendered mesh when the rig has root-motion translation.
+  const anchorPos = _scratchAnchor;
+  if (s.bodyAnchor) s.bodyAnchor.getWorldPosition(anchorPos);
+  else anchorPos.copy(s.position);
+  const up = anchorPos.clone().sub(decorPos).normalize();
+  s.hpBar.position.copy(anchorPos).addScaledVector(up, SPIDER_HEIGHT * 0.3 + 0.3);
   const distToCam = s.hpBar.position.distanceTo(camPos);
   const k = Math.min(1, distToCam / 5);
   s.hpBar.scale.set(HP_BAR_W * k, HP_BAR_H * k, 1);
@@ -2178,8 +2301,9 @@ function tickSpiderHpBar(s: Spider, decorPos: THREE.Vector3, camPos: THREE.Vecto
 function damageSpider(s: Spider, hitPoint: THREE.Vector3): void {
   if (!s.alive) return;
   s.hp -= 1;
-  if (s.hp > 0) return;
+  if (s.hp > 0) { playHit(); return; }
   s.alive = false;
+  playMonsterDie();
   // XP + popup, mirrors awardXp for monsters.
   totalXP += SPIDER_XP_REWARD;
   walkersKilled++;
@@ -2225,6 +2349,7 @@ interface Tribrute {
   hpBarCanvas: HTMLCanvasElement;
   hpBarTexture: THREE.CanvasTexture;
   hpRatioDrawn: number;
+  bodyAnchor: THREE.Object3D | null;
 }
 
 const TRIBRUTE_HEIGHT          = 2.2;  // 2.0 × 1.10 (size bump)
@@ -2296,8 +2421,8 @@ function spawnTribrute(dir: THREE.Vector3, worldId: WorldId = 'third'): void {
   wrap.position.copy(surfPoint);
   wrap.up.copy(up);
   wrap.traverse(c => { c.visible = true; c.frustumCulled = false; });
-  // Make sure the bullet broad-phase doesn't reject animated tribrutes.
-  relaxSkinnedRaycastBounds(wrap, 2.5);
+  relaxSkinnedRaycastBounds(wrap);
+  const bodyAnchor = findBodyAnchor(inst);
   scene.add(wrap);
 
   const mixer = new THREE.AnimationMixer(inst);
@@ -2327,6 +2452,7 @@ function spawnTribrute(dir: THREE.Vector3, worldId: WorldId = 'third'): void {
     maxHp: TRIBRUTE_MAX_HP,
     alive: true,
     hpBar, hpBarCanvas, hpBarTexture, hpRatioDrawn: 1,
+    bodyAnchor,
   });
   tribrutesSpawnedTotal++;
 }
@@ -2509,8 +2635,11 @@ function tickTribruteHpBar(t: Tribrute, farPos: THREE.Vector3, camPos: THREE.Vec
     t.hpBarTexture.needsUpdate = true;
     t.hpRatioDrawn = ratio;
   }
-  const up = t.position.clone().sub(farPos).normalize();
-  t.hpBar.position.copy(t.position).addScaledVector(up, TRIBRUTE_HEIGHT + 0.4);
+  const anchorPos = _scratchAnchor;
+  if (t.bodyAnchor) t.bodyAnchor.getWorldPosition(anchorPos);
+  else anchorPos.copy(t.position);
+  const up = anchorPos.clone().sub(farPos).normalize();
+  t.hpBar.position.copy(anchorPos).addScaledVector(up, TRIBRUTE_HEIGHT * 0.35 + 0.3);
   const distToCam = t.hpBar.position.distanceTo(camPos);
   const k = Math.min(1, distToCam / 5);
   t.hpBar.scale.set(HP_BAR_W * k, HP_BAR_H * k, 1);
@@ -2520,11 +2649,14 @@ function tickTribruteHpBar(t: Tribrute, farPos: THREE.Vector3, camPos: THREE.Vec
 function damageTribrute(t: Tribrute, hitPoint: THREE.Vector3, headshot: boolean = false): void {
   if (!t.alive) return;
   t.hp = headshot ? 0 : t.hp - 1;
-  if (t.hp > 0) return;
+  if (t.hp > 0) { playHit(); return; }
   t.alive = false;
+  if (headshot) playHeadshot(); else playMonsterDie();
   // Headshots use the global headshot reward (15) so head-shooting reads
   // consistently across creature types; whole-body kills use the tribrute reward.
-  const reward = headshot ? XP_PER_HEADSHOT : TRIBRUTE_XP_REWARD;
+  // Tribrutes are tougher (5 HP) so headshots are worth more XP than the
+  // base 15-XP global headshot reward — 1.5× the body-kill payout.
+  const reward = headshot ? Math.round(TRIBRUTE_XP_REWARD * 1.5) : TRIBRUTE_XP_REWARD;
   totalXP += reward;
   walkersKilled++;
   if (headshot) {
@@ -2555,6 +2687,370 @@ function despawnTribrute(t: Tribrute, idxHint?: number): void {
   });
   const idx = idxHint ?? tribrutes.indexOf(t);
   if (idx >= 0) tribrutes.splice(idx, 1);
+}
+
+// --- bats (third-asteroid flying enemies) ---------------------------------
+
+interface BatTemplate {
+  root: THREE.Object3D;
+  idleClip: THREE.AnimationClip | null;
+  flyClip: THREE.AnimationClip | null;       // FastFly
+  attackClip: THREE.AnimationClip | null;    // Attack2
+  death1Clip: THREE.AnimationClip | null;
+  death2Clip: THREE.AnimationClip | null;
+  scale: number;
+  baseY: number;
+  centerXZ: { x: number; z: number };
+}
+
+interface Bat {
+  group: THREE.Object3D;
+  mixer: THREE.AnimationMixer;
+  idleAction: THREE.AnimationAction | null;
+  flyAction: THREE.AnimationAction | null;
+  attackAction: THREE.AnimationAction | null;
+  dyingAction: THREE.AnimationAction | null;  // bound on death (Death1 or Death2 random)
+  state: 'idle' | 'fly' | 'attack' | 'dying';
+  fireCooldown: number;
+  dyingTimer: number;
+  position: THREE.Vector3;
+  hp: number;
+  maxHp: number;
+  alive: boolean;
+  hpBar: THREE.Sprite;
+  hpBarCanvas: HTMLCanvasElement;
+  hpBarTexture: THREE.CanvasTexture;
+  hpRatioDrawn: number;
+  cachedSurfR: number;     // last-known surface radius below the bat (throttled raycast)
+  bodyAnchor: THREE.Object3D | null;
+}
+
+const BAT_HEIGHT          = 1.4;       // bigger silhouette than the eyebeasts
+const BAT_MAX_HP          = 3;         // weapon is full-auto so a quick click already lands 2 — bumping to 3 keeps it from feeling one-shot
+const BAT_MAX_ALIVE       = 6;
+const BAT_LIFETIME_TOTAL  = 30;
+const BAT_SPEED           = 5.5;       // a bit faster than eyebeasts
+const BAT_HOVER_DIST      = 9;         // engages closer than first-asteroid fliers
+const BAT_HOVER_ALT       = 5;         // and lower over the surface
+const BAT_FIRE_RANGE      = 35;
+const BAT_FIRE_INTERVAL   = 2.0;
+const BAT_XP_REWARD       = 30;
+let batsSpawnedTotal = 0;
+
+let batTemplate: BatTemplate | null = null;
+const bats: Bat[] = [];
+let batSpawnAccum = 0;
+let _batFrame = 0;
+
+async function loadBatTemplate(): Promise<void> {
+  let gltf;
+  try { gltf = await loader.loadAsync(`${MODEL_BASE}bat.glb`); }
+  catch (e) { console.warn('[bat] load failed:', e); return; }
+
+  const root = gltf.scene;
+  root.updateMatrixWorld(true);
+  const bbox = meshOnlyBbox(root);
+  if (bbox.isEmpty()) return;
+  const size = new THREE.Vector3(); bbox.getSize(size);
+  const center = new THREE.Vector3(); bbox.getCenter(center);
+  const heightAxis = Math.max(size.x, size.y, size.z);
+  const scale = BAT_HEIGHT / (heightAxis || 1);
+
+  const find = (re: RegExp) => gltf.animations.find(c => re.test(c.name)) ?? null;
+  batTemplate = {
+    root, scale,
+    baseY: -bbox.min.y, centerXZ: { x: center.x, z: center.z },
+    idleClip:   find(/^idle$/i),
+    flyClip:    find(/fastfly/i) ?? find(/^fly$/i),
+    attackClip: find(/attack2/i) ?? find(/attack/i),
+    death1Clip: find(/death1/i) ?? find(/death|die/i),
+    death2Clip: find(/death2/i),
+  };
+  console.log(`[bat] template loaded: scale=${scale.toFixed(2)} idle="${batTemplate.idleClip?.name}" fly="${batTemplate.flyClip?.name}" attack="${batTemplate.attackClip?.name}" death1="${batTemplate.death1Clip?.name}" death2="${batTemplate.death2Clip?.name}"`);
+}
+
+function spawnBat(dir: THREE.Vector3): void {
+  if (!batTemplate || !farAsteroid) return;
+  if (batsSpawnedTotal >= BAT_LIFETIME_TOTAL) return;
+  const tpl = batTemplate;
+  const farPos = new THREE.Vector3();
+  farAsteroid.getWorldPosition(farPos);
+  // Surface point on Toutatis in given direction.
+  const ro = farPos.clone().addScaledVector(dir, asteroidBoundingRadius * 2.5);
+  asteroidRaycaster.set(ro, dir.clone().negate());
+  asteroidRaycaster.far = asteroidBoundingRadius * 5;
+  const hits = asteroidRaycaster.intersectObject(farAsteroid, true);
+  if (!hits[0]) return;
+  const surfPoint = hits[0].point.clone();
+  // Spawn point: a bit above the surface so they're already airborne.
+  const up = surfPoint.clone().sub(farPos).normalize();
+  const position = surfPoint.clone().addScaledVector(up, BAT_HOVER_ALT * 1.3);
+
+  const inst = cloneSkeleton(tpl.root) as THREE.Object3D;
+  inst.position.set(-tpl.centerXZ.x, tpl.baseY, -tpl.centerXZ.z);
+  const wrap = new THREE.Group();
+  wrap.add(inst);
+  wrap.scale.setScalar(tpl.scale);
+  wrap.position.copy(position);
+  wrap.up.copy(up);
+  wrap.traverse(c => { c.visible = true; c.frustumCulled = false; });
+  relaxSkinnedRaycastBounds(wrap);
+  const bodyAnchor = findBodyAnchor(inst);
+  scene.add(wrap);
+
+  const mixer = new THREE.AnimationMixer(inst);
+  const mkAction = (clip: THREE.AnimationClip | null) => clip ? mixer.clipAction(clip) : null;
+  const idleAction   = mkAction(tpl.idleClip);
+  const flyAction    = mkAction(tpl.flyClip);
+  const attackAction = mkAction(tpl.attackClip);
+  if (idleAction) {
+    idleAction.setLoop(THREE.LoopRepeat, Infinity);
+    idleAction.time = Math.random() * (tpl.idleClip?.duration ?? 1);
+    idleAction.play();
+  }
+
+  const { sprite: hpBar, canvas: hpBarCanvas, texture: hpBarTexture } = makeHpBar();
+  scene.add(hpBar);
+
+  bats.push({
+    group: wrap, mixer,
+    idleAction, flyAction, attackAction,
+    dyingAction: null,
+    state: 'idle',
+    fireCooldown: 1.0 + Math.random() * 1.5,
+    dyingTimer: 0,
+    position,
+    hp: BAT_MAX_HP,
+    maxHp: BAT_MAX_HP,
+    alive: true,
+    hpBar, hpBarCanvas, hpBarTexture, hpRatioDrawn: 1,
+    cachedSurfR: surfPoint.distanceTo(farPos),
+    bodyAnchor,
+  });
+  batsSpawnedTotal++;
+}
+
+function setBatState(b: Bat, state: Bat['state']): void {
+  if (b.state === state) return;
+  b.state = state;
+  for (const a of [b.idleAction, b.flyAction, b.attackAction, b.dyingAction]) {
+    if (a) a.fadeOut(0.15);
+  }
+  let chosen: THREE.AnimationAction | null = null;
+  let loop: THREE.AnimationActionLoopStyles = THREE.LoopRepeat;
+  let clamp = false;
+  if      (state === 'idle')   chosen = b.idleAction;
+  else if (state === 'fly')    chosen = b.flyAction;
+  else if (state === 'attack') chosen = b.attackAction;
+  else if (state === 'dying')  { chosen = b.dyingAction; loop = THREE.LoopOnce; clamp = true; }
+  if (chosen) {
+    chosen.reset().fadeIn(0.1).play();
+    chosen.setLoop(loop, loop === THREE.LoopOnce ? 1 : Infinity);
+    chosen.clampWhenFinished = clamp;
+  }
+}
+
+function prespawnBats(count: number): void {
+  if (!batTemplate || !farAsteroid) return;
+  let placed = 0;
+  for (let attempt = 0; attempt < count * 4 && placed < count; attempt++) {
+    const dir = new THREE.Vector3().randomDirection();
+    const before = bats.length;
+    spawnBat(dir);
+    if (bats.length > before) placed++;
+  }
+  console.log(`[bat] prespawn ${placed}/${count}`);
+}
+
+function tickBatSpawner(dt: number): void {
+  if (!batTemplate || !farAsteroid) return;
+  if (currentWorldId() !== 'third') return;
+  batSpawnAccum += dt;
+  if (batSpawnAccum < BAT_FIRE_INTERVAL * 1.5) return;
+  batSpawnAccum = 0;
+
+  const aliveCount = bats.reduce((n, b) => b.alive ? n + 1 : n, 0);
+  if (aliveCount >= BAT_MAX_ALIVE) return;
+
+  const camForward = new THREE.Vector3();
+  camera.getWorldDirection(camForward);
+  const farPos = new THREE.Vector3();
+  farAsteroid.getWorldPosition(farPos);
+  for (let i = 0; i < 16; i++) {
+    const candidate = new THREE.Vector3().randomDirection();
+    const ro = farPos.clone().addScaledVector(candidate, asteroidBoundingRadius * 2.5);
+    asteroidRaycaster.set(ro, candidate.clone().negate());
+    asteroidRaycaster.far = asteroidBoundingRadius * 5;
+    const hits = asteroidRaycaster.intersectObject(farAsteroid, true);
+    if (!hits[0]) continue;
+    const toSpawn = hits[0].point.clone().sub(player.position).normalize();
+    if (toSpawn.dot(camForward) < MONSTER_SPAWN_PLAYER_DOT) {
+      spawnBat(candidate);
+      return;
+    }
+  }
+}
+
+function tickBats(dt: number): void {
+  if (!farAsteroid) return;
+  const onThird = currentWorldId() === 'third';
+  if (!onThird) {
+    for (let i = bats.length - 1; i >= 0; i--) {
+      const b = bats[i];
+      b.group.visible = false;
+      b.hpBar.visible = false;
+      if (b.state === 'dying') {
+        b.dyingTimer -= dt;
+        if (b.dyingTimer <= 0) despawnBat(b, i);
+      }
+    }
+    return;
+  }
+  const farPos = new THREE.Vector3();
+  farAsteroid.getWorldPosition(farPos);
+  const camPos = new THREE.Vector3();
+  camera.getWorldPosition(camPos);
+  _batFrame++;
+
+  for (let i = bats.length - 1; i >= 0; i--) {
+    const b = bats[i];
+
+    // Animation LOD by distance.
+    const distSq = b.position.distanceToSquared(player.position);
+    let mixerDt = dt;
+    if (distSq > 30 * 30) mixerDt = (i + _batFrame) % 2 === 0 ? dt * 2 : 0;
+    if (mixerDt > 0) b.mixer.update(mixerDt);
+
+    if (b.state === 'dying') {
+      b.dyingTimer -= dt;
+      if (b.dyingTimer <= 0) despawnBat(b, i);
+      continue;
+    }
+
+    if (!b.alive) continue;
+
+    b.group.visible = true;
+    b.fireCooldown -= dt;
+
+    const up = b.position.clone().sub(farPos).normalize();
+    // Surface radius below the bat — refreshed every 6 frames per bat
+    // (phase-staggered) instead of every frame. The bat moves slowly enough
+    // that a 6-frame stale surface radius is invisible visually, and we
+    // skip 5 raycasts vs 11k-tri Toutatis per bat per frame.
+    if ((_batFrame + i) % 6 === 0) {
+      const ro = farPos.clone().addScaledVector(up, asteroidBoundingRadius * 2.5);
+      asteroidRaycaster.set(ro, up.clone().negate());
+      asteroidRaycaster.far = asteroidBoundingRadius * 5;
+      const h = asteroidRaycaster.intersectObject(farAsteroid, true);
+      if (h[0]) b.cachedSurfR = h[0].point.distanceTo(farPos);
+    }
+    const altitude = b.position.distanceTo(farPos) - b.cachedSurfR;
+
+    const toPlayer = player.position.clone().sub(b.position);
+    const dist = Math.sqrt(distSq);
+
+    // Move tangentially to maintain hover distance from the player.
+    const tangentToPlayer = toPlayer.clone().sub(up.clone().multiplyScalar(toPlayer.dot(up)));
+    const tangentDist = tangentToPlayer.length();
+    if (tangentDist > 1e-3) tangentToPlayer.divideScalar(tangentDist);
+
+    if (tangentDist > BAT_HOVER_DIST + 1) {
+      b.position.addScaledVector(tangentToPlayer, BAT_SPEED * dt);
+    } else if (tangentDist < BAT_HOVER_DIST - 1) {
+      b.position.addScaledVector(tangentToPlayer, -BAT_SPEED * dt * 0.5);
+    }
+
+    // Vertical: settle to BAT_HOVER_ALT above the surface.
+    const altErr = altitude - BAT_HOVER_ALT;
+    if (Math.abs(altErr) > 0.3) {
+      b.position.addScaledVector(up, -Math.sign(altErr) * BAT_SPEED * 0.6 * dt);
+    }
+    b.position.addScaledVector(up, Math.sin(performance.now() * 0.003 + b.fireCooldown) * 0.025);
+
+    // Attack vs fly state.
+    if (dist < BAT_FIRE_RANGE && b.fireCooldown <= 0) {
+      setBatState(b, 'attack');
+      fireProjectile(b.position.clone(), player.position.clone());
+      b.fireCooldown = BAT_FIRE_INTERVAL;
+    } else {
+      setBatState(b, 'fly');
+    }
+
+    b.group.position.copy(b.position);
+    b.group.up.copy(up);
+    b.group.lookAt(player.position);
+    tickBatHpBar(b, farPos, camPos);
+  }
+}
+
+function tickBatHpBar(b: Bat, farPos: THREE.Vector3, camPos: THREE.Vector3): void {
+  const ratio = Math.max(0, b.hp / b.maxHp);
+  if (Math.abs(ratio - b.hpRatioDrawn) > 0.005) {
+    drawHpBar(b.hpBarCanvas, ratio);
+    b.hpBarTexture.needsUpdate = true;
+    b.hpRatioDrawn = ratio;
+  }
+  const anchorPos = _scratchAnchor;
+  if (b.bodyAnchor) b.bodyAnchor.getWorldPosition(anchorPos);
+  else anchorPos.copy(b.position);
+  const up = anchorPos.clone().sub(farPos).normalize();
+  b.hpBar.position.copy(anchorPos).addScaledVector(up, BAT_HEIGHT * 0.6 + 0.3);
+  const distToCam = b.hpBar.position.distanceTo(camPos);
+  const k = Math.min(1, distToCam / 5);
+  b.hpBar.scale.set(HP_BAR_W * k, HP_BAR_H * k, 1);
+  b.hpBar.visible = b.alive;
+}
+
+function damageBat(b: Bat, hitPoint: THREE.Vector3): void {
+  if (!b.alive) return;
+  b.hp -= 1;
+  if (b.hp > 0) { playHit(); return; }
+  b.alive = false;
+  playMonsterDie();
+  totalXP += BAT_XP_REWARD;
+  fliersKilled++;
+  refreshXpHud();
+  spawnXpPopup(hitPoint, BAT_XP_REWARD);
+  checkLevelUp();
+  // Drop pickup at a surface point under the bat (so it's reachable).
+  if (farAsteroid) {
+    const farPos = new THREE.Vector3();
+    farAsteroid.getWorldPosition(farPos);
+    const upDir = b.position.clone().sub(farPos).normalize();
+    const ro = farPos.clone().addScaledVector(upDir, asteroidBoundingRadius * 2.5);
+    asteroidRaycaster.set(ro, upDir.clone().negate());
+    asteroidRaycaster.far = asteroidBoundingRadius * 5;
+    const hits = asteroidRaycaster.intersectObject(farAsteroid, true);
+    const dropPos = hits[0]?.point.clone() ?? b.position;
+    maybeDropHpPickup(dropPos, 'third');
+  } else {
+    maybeDropHpPickup(b.position, 'third');
+  }
+  // Random pick between Death1 and Death2.
+  const tpl = batTemplate;
+  const dieClips = [tpl?.death1Clip, tpl?.death2Clip].filter(Boolean) as THREE.AnimationClip[];
+  const dieClip = dieClips.length ? dieClips[Math.floor(Math.random() * dieClips.length)] : null;
+  if (dieClip) {
+    b.dyingAction = b.mixer.clipAction(dieClip);
+    setBatState(b, 'dying');
+    b.dyingTimer = dieClip.duration + 0.3;
+  } else {
+    despawnBat(b);
+  }
+  b.hpBar.visible = false;
+}
+
+function despawnBat(b: Bat, idxHint?: number): void {
+  scene.remove(b.group);
+  scene.remove(b.hpBar);
+  b.hpBarTexture.dispose();
+  (b.hpBar.material as THREE.SpriteMaterial).dispose();
+  b.group.traverse(c => {
+    const m = c as THREE.Mesh;
+    if (m.isMesh && m.geometry) m.geometry.dispose();
+  });
+  const idx = idxHint ?? bats.indexOf(b);
+  if (idx >= 0) bats.splice(idx, 1);
 }
 
 function shatterSpider(s: Spider, hitPoint: THREE.Vector3): void {
@@ -2638,22 +3134,57 @@ function shatterSpider(s: Spider, hitPoint: THREE.Vector3): void {
 }
 
 /**
- * Three.js's SkinnedMesh.raycast caches `boundingSphere` based on the
- * bind-pose mesh; bones moving outside that sphere during animation cause
- * the broad-phase ray test to reject the mesh — so an animated spider
- * lunging forward becomes "unkillable" even when the crosshair sits on
- * its body. Bumping the cached sphere radius by a generous factor keeps
- * the broad phase passing while the narrow phase still tests deformed
- * triangles.
+ * Three.js's SkinnedMesh.raycast caches `boundingSphere` on the mesh on
+ * first raycast call (computed from current animation pose) — and never
+ * recomputes. Animations that drift further from that pose later become
+ * "unkillable" because the broad-phase rejects the now-out-of-sphere mesh.
+ *
+ * Fix: invalidate each alive creature's boundingSphere at the start of
+ * every fire raycast (called once per shot). Three.js then recomputes from
+ * the current animation pose on the next intersect call. Cost: one
+ * vertex-iter pass per shot per alive creature — not per frame — so it's
+ * cheap, and the bounds are always tight to the rendered mesh.
  */
-function relaxSkinnedRaycastBounds(root: THREE.Object3D, mult: number = 2.5): void {
+function invalidateSkinnedRaycastBounds(root: THREE.Object3D): void {
   root.traverse(c => {
     const sm = c as THREE.SkinnedMesh;
     if (!(sm as { isSkinnedMesh?: boolean }).isSkinnedMesh) return;
-    if (!sm.geometry.boundingSphere) sm.geometry.computeBoundingSphere();
-    if (sm.geometry.boundingSphere) sm.geometry.boundingSphere.radius *= mult;
-    if (!sm.geometry.boundingBox) sm.geometry.computeBoundingBox();
+    // @types/three's defs say boundingSphere/Box must be non-null but the
+    // runtime treats null as "recompute on next raycast" — that's exactly
+    // what we want here, so cast through the type system.
+    sm.boundingSphere = null as unknown as THREE.Sphere;
+    sm.boundingBox = null as unknown as THREE.Box3;
   });
+}
+
+// Kept under the old name as a no-op so existing callers still type-check
+// while the new invalidate-on-fire flow takes over.
+function relaxSkinnedRaycastBounds(_root: THREE.Object3D, _mult: number = 0): void { /* no-op */ }
+
+/** Reusable scratch for anchor world-position reads. */
+const _scratchAnchor = new THREE.Vector3();
+
+/** Find a roughly-central body bone in a skinned hierarchy. Used to anchor
+ *  HP bars to the actual rendered position of an animated creature
+ *  (otherwise the bar floats at the rig's translation origin while the
+ *  visible mesh has slid away due to animation root-motion). */
+function findBodyAnchor(root: THREE.Object3D): THREE.Object3D | null {
+  let named: THREE.Object3D | null = null;
+  let smesh: THREE.SkinnedMesh | null = null;
+  root.traverse(c => {
+    if ((c as { isBone?: boolean }).isBone && !named) {
+      if (/spine|hip|pelvis|body|chest|abdomen|torso/i.test(c.name)) named = c;
+    }
+    if ((c as { isSkinnedMesh?: boolean }).isSkinnedMesh && !smesh) {
+      smesh = c as THREE.SkinnedMesh;
+    }
+  });
+  if (named) return named;
+  if (smesh) {
+    const bones = (smesh as THREE.SkinnedMesh).skeleton.bones;
+    if (bones.length) return bones[Math.floor(bones.length / 2)] ?? null;
+  }
+  return null;
 }
 
 async function loadCreatureTemplate(
@@ -2761,9 +3292,8 @@ function spawnMonster(dir: THREE.Vector3, kind: MonsterKind = 'walker'): void {
     c.visible = true;
     c.frustumCulled = false;
   });
-  // Same SkinnedMesh raycast-bounds fix as spider/tribrute — keeps shooting
-  // animated walkers/fliers reliable even when bones lunge out of bind pose.
-  relaxSkinnedRaycastBounds(wrap, 2.5);
+  relaxSkinnedRaycastBounds(wrap);
+  const bodyAnchor = findBodyAnchor(inst);
 
   // Initial position: walkers on surface, fliers a bit above the surface.
   const surf = asteroidSurfacePoint(dir);
@@ -2809,6 +3339,7 @@ function spawnMonster(dir: THREE.Vector3, kind: MonsterKind = 'walker'): void {
     dyingTimer: 0,
     position,
     alive: true,
+    bodyAnchor,
   });
 }
 
@@ -3122,10 +3653,17 @@ function tickHpBar(m: Monster): void {
     m.hpBarTexture.needsUpdate = true;
     m.hpRatioDrawn = ratio;
   }
-  // position the bar above the creature
-  _scratchUp.copy(m.position).normalize();
-  const offset = m.kind === 'flier' ? 1.0 : 2.4;
-  m.hpBar.position.copy(m.position).addScaledVector(_scratchUp, offset);
+  // Anchor on the rig's body bone so the bar tracks animation translation
+  // (eyebeasts hover-anim drifts the rendered mesh from wrap.position).
+  const anchorPos = _scratchAnchor;
+  if (m.bodyAnchor) m.bodyAnchor.getWorldPosition(anchorPos);
+  else anchorPos.copy(m.position);
+  // position the bar above the creature. Eyebeasts (kind='flier') sit with
+  // the body-bone in the dead centre of the eye, so we lift further; walkers
+  // get a smaller lift (the body bone is already near hip level).
+  _scratchUp.copy(anchorPos).normalize();
+  const offset = m.kind === 'flier' ? 1.3 : 1.2;
+  m.hpBar.position.copy(anchorPos).addScaledVector(_scratchUp, offset);
   // Distance to camera (camera world position cached by tickMonsters).
   const dist = m.hpBar.position.distanceTo(_scratchCam);
   // Below 5m, shrink linearly so it doesn't dominate the view; above stays
@@ -3642,6 +4180,7 @@ function attack(): void {
   weapon.cooldown = FIRE_COOLDOWN;
   weapon.ammo -= 1;
   updateAmmoHud();
+  playShoot();
 
   // muzzle flash
   flashSprite.visible = true;
@@ -3666,9 +4205,39 @@ function attack(): void {
   // collect potential targets
   const targets: THREE.Object3D[] = [];
   if (rockInstanced) targets.push(rockInstanced);
-  for (const m of monsters) if (m.alive) targets.push(m.group);
-  for (const s of spiders) if (s.alive) targets.push(s.group);
+  for (const m of monsters)  if (m.alive) targets.push(m.group);
+  for (const s of spiders)   if (s.alive) targets.push(s.group);
   for (const t of tribrutes) if (t.alive) targets.push(t.group);
+  for (const b of bats)      if (b.alive) targets.push(b.group);
+
+  // Three.js caches SkinnedMesh.boundingSphere on first raycast; later
+  // animation poses can drift outside it and the broad-phase silently
+  // rejects subsequent rays — that's the "shoot at a creature, no damage"
+  // bug. Invalidate the cached bounds right before the ray test so three.js
+  // re-derives them from the current animated pose.
+  //
+  // Pre-filter: only invalidate creatures plausibly in line of fire
+  // (within range AND within ~60° of the crosshair). Without this filter
+  // sustained full-auto fire (10 shots/sec) would re-iterate every spider's
+  // 67k bone-transformed vertices, which lags the game noticeably.
+  const _fireFrom = new THREE.Vector3();
+  camera.getWorldPosition(_fireFrom);
+  const _fireDir = new THREE.Vector3();
+  camera.getWorldDirection(_fireDir);
+  const _toTarget = new THREE.Vector3();
+  const FIRE_RANGE_SQ = FIRE_RANGE * FIRE_RANGE;
+  for (const t of targets) {
+    if (t === rockInstanced) continue;  // rocks aren't skinned
+    t.getWorldPosition(_toTarget);
+    _toTarget.sub(_fireFrom);
+    const dSq = _toTarget.lengthSq();
+    if (dSq > FIRE_RANGE_SQ * 1.2) continue;
+    if (dSq > 4) {                      // skip the dot test for very near targets
+      _toTarget.divideScalar(Math.sqrt(dSq));
+      if (_toTarget.dot(_fireDir) < 0.5) continue;
+    }
+    invalidateSkinnedRaycastBounds(t);
+  }
 
   const hits = raycaster.intersectObjects(targets, true);
   if (hits.length === 0) return;
@@ -3686,6 +4255,11 @@ function attack(): void {
     const spider = spiders.find(x => x.group === node);
     if (spider) {
       damageSpider(spider, hit.point);
+      return;
+    }
+    const bat = bats.find(x => x.group === node);
+    if (bat) {
+      damageBat(bat, hit.point);
       return;
     }
     const tribrute = tribrutes.find(x => x.group === node);
@@ -3725,7 +4299,7 @@ function attack(): void {
 function damageMonster(m: Monster, hitPoint: THREE.Vector3, headshot: boolean = false): void {
   if (!m.alive) return;
   m.hp = headshot ? 0 : m.hp - 1;
-  if (m.hp > 0) return; // still alive — HP bar will reflect new ratio next tick
+  if (m.hp > 0) { playHit(); return; }
 
   m.alive = false;
   if (headshot) spawnHeadshotPopup(hitPoint);
@@ -3914,6 +4488,42 @@ document.addEventListener('mousemove', (e) => {
 
 startBtn.addEventListener('click', () => renderer.domElement.requestPointerLock());
 
+// Toggleable per-frame ground-clamp log. Press `L` in-game to flip.
+// While on, every tickPlayer call dumps the inputs/outputs of the surface
+// raycast & clamp so we can post-mortem any judder by reading the console.
+let _debugClampLog = false;
+window.addEventListener('keydown', (e) => {
+  if (e.code !== 'KeyL') return;
+  _debugClampLog = !_debugClampLog;
+  console.log(`[clamp] log ${_debugClampLog ? 'ON' : 'OFF'}`);
+});
+
+// Continuous tangent-basis construction via parallel transport. The simple
+// "ref = (0,0,1) unless |up.z| > T" approach (with or without hysteresis)
+// snaps when the player walks through the band where up.z crosses the
+// threshold — every threshold-based selector eventually flips and inverts
+// the basis, jolting the camera.
+//
+// Instead we cache the previous frame's t1 in world space and, each frame,
+// project it onto the plane perpendicular to the new up. Because the
+// projection of any unit vector that's nearly perpendicular changes
+// smoothly with the basis, t1 evolves continuously — no flips, no jitter.
+const _persistentT1 = new THREE.Vector3(1, 0, 0);
+function buildStableTangent(eyeUp: THREE.Vector3, t1Out: THREE.Vector3): void {
+  const dot = _persistentT1.dot(eyeUp);
+  t1Out.copy(_persistentT1).addScaledVector(eyeUp, -dot);
+  if (t1Out.lengthSq() < 0.01) {
+    // Cached t1 has drifted parallel to up — re-seed from a world axis
+    // that's roughly perpendicular to up.
+    if (Math.abs(eyeUp.x) < 0.9)      t1Out.set(1, 0, 0);
+    else if (Math.abs(eyeUp.y) < 0.9) t1Out.set(0, 1, 0);
+    else                              t1Out.set(0, 0, 1);
+    t1Out.addScaledVector(eyeUp, -t1Out.dot(eyeUp));
+  }
+  t1Out.normalize();
+  _persistentT1.copy(t1Out);
+}
+
 function tickPlayer(dt: number): void {
   // Pick the gravity centre and the mesh used for ground raycasts based on
   // which asteroid the player is standing on (origin / decor / Toutatis).
@@ -3925,9 +4535,8 @@ function tickPlayer(dt: number): void {
   const rel = player.position.clone().sub(gravityCentre);
   const up = rel.lengthSq() > 0.01 ? rel.normalize() : new THREE.Vector3(0, 1, 0);
 
-  let ref = new THREE.Vector3(0, 0, 1);
-  if (Math.abs(ref.dot(up)) > 0.95) ref = new THREE.Vector3(1, 0, 0);
-  const t1 = ref.clone().sub(up.clone().multiplyScalar(ref.dot(up))).normalize();
+  const t1 = new THREE.Vector3();
+  buildStableTangent(up, t1);
   const t2 = new THREE.Vector3().crossVectors(up, t1).normalize();
 
   const cosY = Math.cos(player.yaw);
@@ -3962,19 +4571,46 @@ function tickPlayer(dt: number): void {
   const ground = currentWorldId() === 'first'
     ? findGroundExact(player.position)
     : (groundMesh ? findGroundOnObject(player.position, gravityCentre, groundMesh) : null);
+  // Debug snapshot — written even if `ground` was null so we can see when
+  // the raycast misses entirely.
+  const _dbgUp = ground ? ground.up : new THREE.Vector3();
+  const _dbg = _debugClampLog ? {
+    w: currentWorldId(),
+    pPre: player.position.toArray().map(n => +n.toFixed(3)),
+    vPre: player.velocity.toArray().map(n => +n.toFixed(3)),
+    pR: +player.position.distanceTo(gravityCentre).toFixed(3),
+    g: ground ? +ground.point.distanceTo(gravityCentre).toFixed(3) : null,
+    grounded: player.grounded,
+    moving,
+    yaw: +player.yaw.toFixed(3),
+    pitch: +player.pitch.toFixed(3),
+    up: _dbgUp.toArray().map(n => +n.toFixed(3)),
+    keysW: keys.has('KeyW'),
+  } : null;
   if (ground) {
     const playerR = player.position.distanceTo(gravityCentre);
     const surfR = ground.point.distanceTo(gravityCentre);
     const footR = surfR + PLAYER_RADIUS;
     if (playerR < footR) {
-      player.position.copy(gravityCentre).addScaledVector(ground.up, footR);
+      // Cap upward correction per frame so an irregular-asteroid raycast
+      // glitch (catching a different lobe of Toutatis when WASD shifts the
+      // up direction slightly) can't teleport the camera several metres up
+      // in one tick. The next frame's raycast will resolve toward the real
+      // surface and gravity does the rest.
+      const targetR = Math.min(footR, playerR + 1.5);
+      player.position.copy(gravityCentre).addScaledVector(ground.up, targetR);
       const inward = player.velocity.dot(ground.up);
       if (inward < 0) player.velocity.addScaledVector(ground.up, -inward);
-      player.grounded = true;
+      player.grounded = (targetR >= footR - 0.01);
+      if (_dbg) Object.assign(_dbg, { surfR: +surfR.toFixed(2), footR: +footR.toFixed(2), targetR: +targetR.toFixed(2), capped: targetR < footR - 0.001 });
     } else if (playerR > footR + 0.05) {
       player.grounded = false;
+      if (_dbg) Object.assign(_dbg, { surfR: +surfR.toFixed(2), footR: +footR.toFixed(2), aboveSurface: +(playerR - footR).toFixed(2) });
+    } else if (_dbg) {
+      Object.assign(_dbg, { surfR: +surfR.toFixed(2), footR: +footR.toFixed(2), restingOnSurface: true });
     }
   }
+  if (_dbg) console.log('[clamp]', JSON.stringify(_dbg));
 
   if (player.grounded && moving) player.bobPhase += dt * (speed === SPRINT_SPEED ? 11 : 8);
   const bob = Math.sin(player.bobPhase) * (player.grounded && moving ? 0.04 : 0);
@@ -3987,9 +4623,8 @@ function tickPlayer(dt: number): void {
   // the current "up" while on the second asteroid.
   if (onSecondAsteroid) secondAsteroidUp.copy(eyeUp);
 
-  let ref2 = new THREE.Vector3(0, 0, 1);
-  if (Math.abs(ref2.dot(eyeUp)) > 0.95) ref2 = new THREE.Vector3(1, 0, 0);
-  const t1b = ref2.clone().sub(eyeUp.clone().multiplyScalar(ref2.dot(eyeUp))).normalize();
+  const t1b = new THREE.Vector3();
+  buildStableTangent(eyeUp, t1b);
   const t2b = new THREE.Vector3().crossVectors(eyeUp, t1b).normalize();
   const forwardNow = t1b.clone().multiplyScalar(Math.cos(player.yaw))
     .addScaledVector(t2b, Math.sin(player.yaw));
@@ -4051,7 +4686,7 @@ async function renderCredits(): Promise<void> {
     const res = await fetch(`${MODEL_BASE}CREDITS.json`);
     if (!res.ok) return;
     const all: CreditsEntry[] = await res.json();
-    const used = all.filter(c => ['asteroid', 'rock', 'fps_rifle', 'monster', 'projectile', 'spider', 'asteroid_far', 'tribrute'].includes(c.slug));
+    const used = all.filter(c => ['asteroid', 'rock', 'fps_rifle', 'monster', 'projectile', 'spider', 'asteroid_far', 'tribrute', 'bat'].includes(c.slug));
     if (used.length === 0) return;
     const escapeHtml = (s: string) =>
       s.replace(/[&<>"']/g, ch => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[ch]!));
@@ -4068,6 +4703,9 @@ const clock = new THREE.Clock();
 
 function animate(): void {
   requestAnimationFrame(animate);
+  // Pause the simulation while the player has pointer-lock released
+  // (Esc → menu overlay) — but keep rendering so the overlay re-draws.
+  if (!paused()) {
   // Wrap the per-frame work in try/catch so a single transient error doesn't
   // halt the loop (which previously caused pointer lock release & a "kicked
   // back to menu" feel).
@@ -4080,6 +4718,8 @@ function animate(): void {
     tickSpiders(dt);
     tickTribruteSpawner(dt);
     tickTribrutes(dt);
+    tickBatSpawner(dt);
+    tickBats(dt);
     tickHpPickups(dt);
     tickEyebeasts(dt);
     tickProjectiles(dt);
@@ -4099,10 +4739,25 @@ function animate(): void {
     const aliveMonsters = monsters.filter(m => m.alive).length;
     infoEl.textContent = `monsters: ${aliveMonsters}/${monsters.length}  ·  rocks: ${aliveRocks}/${rocks.length}  ·  fragments: ${fragments.length}  ·  alt: ${(player.position.length() - asteroidBoundingRadius).toFixed(2)}`;
 
-    renderer.render(scene, camera);
   } catch (e) {
     console.error('[animate]', e);
   }
+  } else {
+    // While paused, drain the clock so the first frame after un-pause
+    // doesn't get a huge dt that teleports everything.
+    clock.getDelta();
+  }
+  // Always render so the menu overlay stays interactive.
+  renderer.render(scene, camera);
+}
+
+/** True while the user has Esc'd out of the game (menu overlay visible).
+ *  We keep rAF running for the menu but skip simulation/AI ticks. */
+let bootCompleted = false;
+function paused(): boolean {
+  if (!bootCompleted) return false;
+  if (playerDead)    return false;          // death overlay handles its own UX
+  return document.pointerLockElement !== renderer.domElement;
 }
 
 // --- bootstrap ------------------------------------------------------------
@@ -4128,7 +4783,7 @@ async function step(label: string, total: number, idx: number, fn: () => Promise
 }
 
 (async () => {
-  const STEPS = 12;
+  const STEPS = 13;
   let i = 0;
   renderCredits();
   await step('loading asteroid',          STEPS, ++i, loadAsteroid);
@@ -4153,6 +4808,10 @@ async function step(label: string, total: number, idx: number, fn: () => Promise
     prespawnTribrutes(6, 'second');
     prespawnTribrutes(12, 'third');
   });
+  await step('loading bats',              STEPS, ++i, async () => {
+    await loadBatTemplate();
+    prespawnBats(4);
+  });
   // Pre-compile every shader currently in the scene so the first render
   // (and any subsequent monster/projectile spawn) doesn't stall while the
   // GPU builds new programs. Without this, the first time a flier or
@@ -4169,5 +4828,6 @@ async function step(label: string, total: number, idx: number, fn: () => Promise
     loaderEl.style.opacity = '0';
     setTimeout(() => loaderEl.remove(), 500);
   }
+  bootCompleted = true;
   animate();
 })();
