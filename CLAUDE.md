@@ -88,8 +88,10 @@ Most features follow the same shape. To add **a new ability or action**:
    `dispatch(action)`.
 
 7. **Test**. Add a Bun test under `tests/` that calls `applyAction` directly
-   on a fresh game state and asserts on `events` + post-state. Reducer
-   tests run in 366 ms total; keep them fast.
+   on a fresh game state and asserts on `events` + post-state. The full
+   suite is 16 tests across 3 files (`combat`, `reducer`, `turnCycle`) and
+   runs in ~170 ms — always run `npm test` before committing engine or
+   reducer changes. Keep individual tests fast; no I/O, no THREE.
 
 ## Common gotchas
 
@@ -135,7 +137,8 @@ npm run server       # Bun WebSocket server on http://localhost:3001 (/ws)
                      # In prod, both are served from the same Cloud Run URL.
 
 npm run build        # Vite production bundle into dist/
-npm test             # Bun unit tests (engine + reducer)
+npm test             # Bun unit tests — 16 tests, ~170 ms. Run before every commit
+                     # that touches src/shared/ or src/engine/.
 npm run typecheck    # tsc --noEmit
 ```
 
